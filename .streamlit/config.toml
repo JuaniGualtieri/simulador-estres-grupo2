@@ -1,0 +1,11 @@
+# Tema premium de la suite (paleta verde agroecologica + acento naranja).
+[theme]
+primaryColor = "#2E7D32"
+backgroundColor = "#F7FAF4"
+secondaryBackgroundColor = "#EDF1E9"
+textColor = "#23311C"
+font = "sans serif"
+
+[server]
+headless = true
+runOnSave = true

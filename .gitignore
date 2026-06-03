@@ -24,4 +24,15 @@ env/
 
 # ==== Artefactos temporales ====
 _*.png
+_*.log
 *.tmp
+
+# ==== Streamlit ====
+.streamlit/secrets.toml
+
+# Contexto local para la IA (No subir a GitHub)
+*.pdf
+*.zip
+*.docx
+*.doc
+instrucciones_simulador*.txt

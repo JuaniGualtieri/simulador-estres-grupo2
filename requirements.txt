@@ -1,7 +1,8 @@
-# Dependencias del Simulador de Estres - Connection Pooler Supabase (Grupo 2)
+# Dependencias de la Suite de Simulacion v3.0 - Grupo 2
+# (Pestania 1: estres del Connection Pooler Supabase | Pestania 2: cadena de produccion)
 # Instalar con:  pip install -r requirements.txt
+streamlit>=1.40
 simpy>=4.1
 numpy>=1.26
 matplotlib>=3.8
-customtkinter>=5.2
 reportlab>=4.0
