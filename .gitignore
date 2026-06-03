@@ -1,0 +1,27 @@
+# ==== Material academico / de catedra (NO va al repo del simulador) ====
+*.pdf
+*.docx
+*.zip
+Trabajo-Nutric-extracted/
+instrucciones_simulador*.txt
+instrucciones_simulador.txt.txt
+
+# ==== Reporte generado por el propio simulador ====
+Reporte_Simulacion_Estres_Grupo2.pdf
+
+# ==== Python ====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ==== Entorno de trabajo / IDE ====
+.claude/
+.vscode/
+.idea/
+
+# ==== Artefactos temporales ====
+_*.png
+*.tmp

@@ -1,0 +1,7 @@
+# Dependencias del Simulador de Estres - Connection Pooler Supabase (Grupo 2)
+# Instalar con:  pip install -r requirements.txt
+simpy>=4.1
+numpy>=1.26
+matplotlib>=3.8
+customtkinter>=5.2
+reportlab>=4.0
