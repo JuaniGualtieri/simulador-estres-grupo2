@@ -1,4 +1,4 @@
-# Suite de Simulación de Eventos Discretos — Grupo 2 (v3.0)
+# Simulación de Eventos Discretos — Grupo 2 (v3.0)
 
 Aplicación **web** (Streamlit) que unifica **dos modelos de simulación de eventos
 discretos** (SimPy) en una interfaz multipestaña, bajo una arquitectura **modular**
