@@ -52,7 +52,7 @@ def _panel_reporte() -> None:
             padding:12px 14px;font-size:0.82rem;color:{PALETA['txt_suave']};">
             <b style="color:{PALETA['verde']};">Sistema real modelado</b><br>
             · 60 conexiones (plan gratuito Supabase)<br>
-            · 24 preguntas sensoriales (escala hedonica)<br>
+            · 12 preguntas sensoriales (5 dimensiones, escala 1-10)<br>
             · 50 comensales · 11/06/2026 · Planta Piloto<br>
             · Conexion directa Client-to-Cloud
             </div>

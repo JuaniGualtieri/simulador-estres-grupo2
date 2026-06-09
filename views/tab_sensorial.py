@@ -5,11 +5,12 @@
  Trabajo Practico Integrador Intercatedra - Grupo 2
 ================================================================================
 
-Interfaz Streamlit del modelo Monte Carlo de aceptacion sensorial: un slider de
-"Calidad de Preparacion en Cocina", tarjetas de KPI (tasa de aceptacion global con IC
-95% y puntaje por descriptor) y dos graficos cientificos (puntaje por descriptor +
-analisis de sensibilidad del Sabor). NO contiene matematica: delega en
-sim/sensorial_sim.py (motor Monte Carlo) y utils/charts.py (visualizacion).
+Interfaz Streamlit del modelo Monte Carlo de aceptacion sensorial alineado con la
+NUEVA ENCUESTA REAL de 12 preguntas (8 sliders 1-10, 2 preguntas Si/No y 2 campos
+demograficos). Ofrece: un slider de "Calidad de Preparacion en Cocina", tarjetas de
+KPI (tasa de aceptacion global con IC 95% y % de "Si"), panel demografico, perfil de
+los 8 atributos, barras Si/No, comentarios simulados y analisis de sensibilidad del
+Sabor. NO contiene matematica: delega en sim/sensorial_sim.py y utils/charts.py.
 """
 
 from __future__ import annotations
@@ -36,8 +37,8 @@ def _panel_control() -> bool:
     st.markdown("#### 1 · Calidad de preparacion")
     st.slider("Calidad de Preparacion en Cocina", min_value=1, max_value=10, step=1,
               key=K_CALIDAD,
-              help="Gobierna la media de las distribuciones de puntaje: a mejor "
-                   "preparacion, mejores notas esperadas de los jueces.")
+              help="Gobierna la media de las distribuciones de cada atributo: a mejor "
+                   "preparacion, mejores notas y mas respuestas 'Si' esperadas.")
 
     st.markdown("#### 2 · Experimento Monte Carlo")
     st.select_slider("Iteraciones (eventos simulados)", options=[10, 30, 100, 500],
@@ -46,11 +47,11 @@ def _panel_control() -> bool:
                           "y construir el IC 95%.")
 
     st.info(
-        f"Se simulan **{sens.N_COMENSALES} comensales** respondiendo "
-        f"**{sens.N_PREGUNTAS} preguntas** (escala hedonica {sens.ESCALA_MIN}-"
-        f"{sens.ESCALA_MAX}) agrupadas en 4 descriptores: "
-        f"{', '.join(sens.DESCRIPTORES)}. Un comensal *acepta* el producto si su "
-        f"puntaje promedio es ≥ {sens.UMBRAL_ACEPTACION}.")
+        f"Se simulan **{sens.N_COMENSALES} comensales** respondiendo la encuesta real de "
+        f"**{sens.N_PREGUNTAS_TOTAL} preguntas**: 8 escalas 1-10, 2 preguntas Si/No y los "
+        f"datos demograficos (ano de nacimiento y sexo), en 5 dimensiones sensoriales "
+        f"(Vista, Olfato, Tacto y Oido, Gusto y Boca, Sabor). Un comensal *acepta* el "
+        f"producto si su **sabor general** es ≥ {sens.UMBRAL_ACEPTACION}.")
 
     st.markdown("")
     return st.button("►  Simular aceptacion (Monte Carlo)", type="primary", width="stretch")
@@ -91,14 +92,43 @@ def _mostrar_kpis(agg: sens.SensorialAggregated) -> None:
                 f"{tasa:.1f} %", ic("tasa_aceptacion"), color_tasa,
                 "▲" if tasa >= 60 else "▼")
     tarjeta_kpi(fila1[1], "Puntaje global medio",
-                f"{agg.media('puntaje_global'):.2f} / 9", ic("puntaje_global", 2),
+                f"{agg.media('puntaje_global'):.2f} / 10", ic("puntaje_global", 2),
                 PALETA["verde"], "★")
 
-    fila2 = st.columns(4)
-    for col, d in zip(fila2, sens.DESCRIPTORES):
-        valor = agg.media_descriptor(d)
-        color = PALETA["verde"] if valor >= sens.UMBRAL_ACEPTACION else PALETA["ambar"]
-        tarjeta_kpi(col, d, f"{valor:.2f}", ic(f"desc_{d}", 2), color, "◍")
+    # Las dos preguntas dicotomicas como KPI de % de "Si".
+    fila2 = st.columns(2)
+    for col, b in zip(fila2, sens.ATRIBUTOS_BOOL):
+        valor = agg.prop_si(b)
+        color = PALETA["verde"] if valor >= 50 else PALETA["ambar"]
+        tarjeta_kpi(col, sens.ETIQUETAS[b], f"{valor:.0f} % Sí",
+                    ic(f"prop_{b}"), color, "◍")
+
+
+def _mostrar_demografia(agg: sens.SensorialAggregated) -> None:
+    demo = sens.resumen_demografico(agg)
+    st.markdown("##### Perfil demografico del panel")
+    cols = st.columns(3)
+    tarjeta_kpi(cols[0], "Comensales", f"{demo.n}",
+                f"Edad media {demo.edad_media:.0f} años", PALETA["verde"], "👥")
+    tarjeta_kpi(cols[1], "Masculino", f"{demo.pct_masculino:.0f} %",
+                f"{demo.n_masculino} comensales", PALETA["verde"], "♂")
+    tarjeta_kpi(cols[2], "Femenino", f"{demo.pct_femenino:.0f} %",
+                f"{demo.n_femenino} comensales", PALETA["naranja"], "♀")
+    st.pyplot(charts.figura_demografia(agg, figsize=(8.0, 2.8)), width="stretch")
+
+
+def _mostrar_comentarios(agg: sens.SensorialAggregated) -> None:
+    comentarios = sens.comentarios_panel(agg, limite=8)
+    st.markdown("##### Comentarios libres simulados")
+    if not comentarios:
+        st.caption("Ningun comensal del panel dejo un comentario en esta corrida.")
+        return
+    bloques = "".join(
+        f"<div style='background:{PALETA['verde_suave']};border-left:4px solid "
+        f"{PALETA['verde']};border-radius:8px;padding:8px 12px;margin-bottom:8px;"
+        f"font-size:0.86rem;color:{PALETA['txt']};'>“{c}”</div>"
+        for c in comentarios)
+    st.markdown(bloques, unsafe_allow_html=True)
 
 
 def render() -> None:
@@ -106,8 +136,9 @@ def render() -> None:
     _inicializar_estado()
     st.markdown(
         "<div class='bloque-titulo'><h1>Aceptacion Sensorial (Monte Carlo)</h1>"
-        "<p>Simulacion estocastica de la prueba afectiva/descriptiva: 50 jueces, "
-        "24 preguntas, 4 descriptores y analisis de sensibilidad del Sabor.</p></div>",
+        "<p>Simulacion estocastica de la encuesta real de 12 preguntas: 50 comensales, "
+        "8 escalas 1-10, 2 preguntas Si/No, datos demograficos y analisis de "
+        "sensibilidad del Sabor.</p></div>",
         unsafe_allow_html=True)
 
     col_ctrl, col_res = st.columns([1, 2.4], gap="large")
@@ -128,8 +159,13 @@ def render() -> None:
             f"{agg.n_iteraciones} iteraciones")
         _mostrar_kpis(agg)
         st.markdown("")
+        _mostrar_demografia(agg)
+        st.markdown("")
         st.markdown("##### Visualizacion cientifica")
-        st.pyplot(charts.figura_descriptores(agg, figsize=(8.0, 3.2)), width="stretch")
+        st.pyplot(charts.figura_perfil(agg, figsize=(8.0, 3.6)), width="stretch")
+        st.pyplot(charts.figura_si_no(agg, figsize=(8.0, 2.2)), width="stretch")
         st.pyplot(charts.figura_sensibilidad(agg, figsize=(8.0, 3.2)), width="stretch")
+        st.markdown("")
+        _mostrar_comentarios(agg)
         with st.expander("Diagnostico sensorial y recomendaciones", expanded=True):
             st.code(sens.generar_diagnostico(agg), language=None)

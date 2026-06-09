@@ -21,8 +21,8 @@ from matplotlib.figure import Figure
 
 from sim.server_sim import POOLER_CAPACITY, AggregatedResult
 from sim.production_sim import ProductionAggregated
-from sim.sensorial_sim import (DESCRIPTORES, ESCALA_MAX, UMBRAL_ACEPTACION,
-                               SensorialAggregated)
+from sim.sensorial_sim import (ATRIBUTOS_BOOL, ATRIBUTOS_SLIDER, ESCALA_MAX,
+                               ETIQUETAS, UMBRAL_ACEPTACION, SensorialAggregated)
 
 # ---- Paleta premium interdisciplinaria (verde agroecologico + ambar) ----
 VERDE = "#2E7D32"
@@ -171,43 +171,102 @@ def dibujar_curva_stock(ax, agg: ProductionAggregated) -> None:
 
 
 # ===========================================================================
-# PESTANIA 3 - GRAFICO A: puntaje medio por descriptor sensorial (barras)
+# PESTANIA 3 - GRAFICO A: perfil de los 8 atributos numericos (barras)
 # ===========================================================================
-def dibujar_descriptores(ax, agg: SensorialAggregated) -> None:
-    """Barras horizontales del puntaje medio (1-9) de cada descriptor sensorial.
+def dibujar_perfil_atributos(ax, agg: SensorialAggregated) -> None:
+    """Barras horizontales del puntaje medio (1-10) de los 8 atributos de la encuesta.
 
     Marca el umbral de aceptacion (>= 6) con una linea ambar; las barras que lo superan
     se pintan verdes y las que no, ambar, con su IC 95% como barra de error.
     """
     ax.clear()
-    nombres = list(DESCRIPTORES)
-    medias = [agg.media_descriptor(d) for d in nombres]
-    errores = [max(0.0, agg.media_descriptor(d) - agg.ic(f"desc_{d}")[0]) for d in nombres]
+    atributos = list(ATRIBUTOS_SLIDER)
+    nombres = [ETIQUETAS[a] for a in atributos]
+    medias = [agg.media(a) for a in atributos]
+    errores = [max(0.0, agg.media(a) - agg.ic(a)[0]) for a in atributos]
     colores = [VERDE if m >= UMBRAL_ACEPTACION else AMBAR for m in medias]
 
-    y = list(range(len(nombres)))
-    ax.barh(y, medias, color=colores, alpha=0.85, height=0.6, zorder=3,
+    y = list(range(len(atributos)))
+    ax.barh(y, medias, color=colores, alpha=0.85, height=0.62, zorder=3,
             xerr=errores if agg.ic_disponible else None,
             error_kw=dict(ecolor=TXT_TICK, capsize=4, elinewidth=1.0))
     for yi, m in zip(y, medias):
-        ax.text(m + 0.12, yi, f"{m:.2f}", va="center", fontsize=9, color=TXT_TITULO)
+        ax.text(m + 0.12, yi, f"{m:.2f}", va="center", fontsize=8.5, color=TXT_TITULO)
 
     ax.axvline(UMBRAL_ACEPTACION, color=NARANJA, linestyle="--", linewidth=1.4,
                label=f"Umbral de aceptacion ({UMBRAL_ACEPTACION})", zorder=2)
     ax.set_yticks(y)
     ax.set_yticklabels(nombres)
-    ax.set_xlim(0, ESCALA_MAX + 0.6)
+    ax.set_xlim(0, ESCALA_MAX + 0.8)
     ax.invert_yaxis()
-    _estilizar_ejes(ax, "Puntaje medio por descriptor sensorial (escala 1-9)",
-                    "Puntaje hedonico medio", "")
+    _estilizar_ejes(ax, "Perfil sensorial: puntaje medio por atributo (escala 1-10)",
+                    "Puntaje medio", "")
     ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9)
 
 
 # ===========================================================================
-# PESTANIA 3 - GRAFICO B: analisis de sensibilidad del descriptor Sabor
+# PESTANIA 3 - GRAFICO B: preguntas dicotomicas Si/No (barras 100% apiladas)
+# ===========================================================================
+def dibujar_si_no(ax, agg: SensorialAggregated) -> None:
+    """Barras horizontales 100% apiladas con el % de 'Si' / 'No' de las dos cualitativas."""
+    ax.clear()
+    atributos = list(ATRIBUTOS_BOOL)
+    nombres = [ETIQUETAS[a] for a in atributos]
+    pct_si = [agg.prop_si(a) for a in atributos]
+    pct_no = [100.0 - p for p in pct_si]
+
+    y = list(range(len(atributos)))
+    ax.barh(y, pct_si, color=VERDE, alpha=0.9, height=0.55, zorder=3, label="Si")
+    ax.barh(y, pct_no, left=pct_si, color=VERDE_CLARO, alpha=0.7, height=0.55,
+            zorder=3, label="No")
+    for yi, ps in zip(y, pct_si):
+        if ps >= 8:
+            ax.text(ps / 2.0, yi, f"{ps:.0f}%", va="center", ha="center",
+                    fontsize=8.5, color="white", fontweight="bold")
+        if (100.0 - ps) >= 8:
+            ax.text(ps + (100.0 - ps) / 2.0, yi, f"{100.0 - ps:.0f}%", va="center",
+                    ha="center", fontsize=8.5, color=TXT_TITULO)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(nombres)
+    ax.set_xlim(0, 100)
+    ax.invert_yaxis()
+    _estilizar_ejes(ax, "Preguntas cualitativas (Si / No)", "Porcentaje de comensales (%)", "")
+    ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9, ncol=2)
+
+
+# ===========================================================================
+# PESTANIA 3 - GRAFICO C: demografia del panel (edades + sexo)
+# ===========================================================================
+def dibujar_edades(ax, agg: SensorialAggregated) -> None:
+    """Histograma de la distribucion de edades del panel de comensales."""
+    ax.clear()
+    edades = [c.edad for c in agg.panel]
+    if edades:
+        bins = range(15, 75, 5)
+        ax.hist(edades, bins=bins, color=VERDE, alpha=0.85, edgecolor="white", zorder=3)
+    _estilizar_ejes(ax, "Distribucion de edades (panel)", "Edad (anios)", "Comensales")
+
+
+def dibujar_sexo(ax, agg: SensorialAggregated) -> None:
+    """Torta de la distribucion por sexo (genero auto-percibido) del panel."""
+    ax.clear()
+    n_masc = sum(1 for c in agg.panel if c.sexo == "Masculino")
+    n_fem = len(agg.panel) - n_masc
+    if agg.panel:
+        ax.pie([n_masc, n_fem], labels=["Masculino", "Femenino"],
+               colors=[VERDE, NARANJA], autopct="%1.0f%%", startangle=90,
+               textprops=dict(color=TXT_TITULO, fontsize=9),
+               wedgeprops=dict(edgecolor="white", linewidth=1.5))
+    ax.set_title("Distribucion por sexo (panel)", fontsize=11, fontweight="bold",
+                 color=TXT_TITULO, pad=10)
+
+
+# ===========================================================================
+# PESTANIA 3 - GRAFICO D: analisis de sensibilidad del Sabor general
 # ===========================================================================
 def dibujar_sensibilidad_sabor(ax, agg: SensorialAggregated) -> None:
-    """Curva de aceptacion global (%) en funcion de la calidad del descriptor Sabor."""
+    """Curva de aceptacion global (%) en funcion de la media del Sabor general (1-10)."""
     ax.clear()
     x = list(agg.sens_sabor_medias)
     y = list(agg.sens_aceptacion)
@@ -216,12 +275,14 @@ def dibujar_sensibilidad_sabor(ax, agg: SensorialAggregated) -> None:
         ax.plot(x, y, color=NARANJA, linewidth=2.2, marker="o", markersize=5,
                 markerfacecolor="white", markeredgecolor=NARANJA, zorder=3,
                 label="Aceptacion global proyectada")
-        ax.axhline(UMBRAL_ACEPTACION * 0 + 80, color=VERDE, linestyle=":",
-                   linewidth=1.2, alpha=0.8, label="Meta comercial (80%)", zorder=2)
+        ax.axhline(80, color=VERDE, linestyle=":", linewidth=1.2, alpha=0.8,
+                   label="Meta comercial (80%)", zorder=2)
+        ax.axvline(UMBRAL_ACEPTACION, color=AMBAR, linestyle="--", linewidth=1.2,
+                   alpha=0.7, label=f"Umbral de aceptacion ({UMBRAL_ACEPTACION})", zorder=2)
     ax.set_ylim(0, 105)
-    ax.set_xlim(min(x) if x else 1, max(x) if x else 9)
-    _estilizar_ejes(ax, "Sensibilidad: aceptacion vs calidad del Sabor",
-                    "Puntaje medio objetivo del Sabor (1-9)", "Aceptacion global (%)")
+    ax.set_xlim(min(x) if x else 1, max(x) if x else ESCALA_MAX)
+    _estilizar_ejes(ax, "Sensibilidad: aceptacion vs Sabor general",
+                    "Puntaje medio objetivo del Sabor general (1-10)", "Aceptacion global (%)")
     ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9)
 
 
@@ -249,9 +310,24 @@ def figura_stock(agg: ProductionAggregated, figsize=(7.2, 4.0), dpi=150) -> Figu
     return fig
 
 
-def figura_descriptores(agg: SensorialAggregated, figsize=(7.2, 3.2), dpi=150) -> Figure:
+def figura_perfil(agg: SensorialAggregated, figsize=(7.2, 3.6), dpi=150) -> Figure:
     fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_descriptores(fig.add_subplot(111), agg)
+    dibujar_perfil_atributos(fig.add_subplot(111), agg)
+    fig.tight_layout()
+    return fig
+
+
+def figura_si_no(agg: SensorialAggregated, figsize=(7.2, 2.4), dpi=150) -> Figure:
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
+    dibujar_si_no(fig.add_subplot(111), agg)
+    fig.tight_layout()
+    return fig
+
+
+def figura_demografia(agg: SensorialAggregated, figsize=(7.2, 3.0), dpi=150) -> Figure:
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
+    dibujar_edades(fig.add_subplot(121), agg)
+    dibujar_sexo(fig.add_subplot(122), agg)
     fig.tight_layout()
     return fig
 

@@ -107,7 +107,7 @@ La app abre en `http://localhost:8501`.
 
 ### Distribuciones estadísticas
 - **Arribos:** Exponencial.
-- **Tiempo de llenado:** Uniforme(45, 90) s (justificado por las 24 preguntas reales).
+- **Tiempo de llenado:** Uniforme(45, 90) s (justificado por las 12 preguntas reales).
 - **Respuesta cloud / retención:** Normal(media, desvío) por escenario
   (Esperado = Normal(0,25 s; 0,05 s)) + cola pesada Exponencial bajo Wi-Fi degradada.
 

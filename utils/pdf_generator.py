@@ -30,9 +30,11 @@ from sim.server_sim import generar_diagnostico as diagnostico_servidor
 from sim.production_sim import (ProductionAggregated, STOCK_INICIAL_LOTES,
                                TARTALETAS_POR_LOTE, VENTANA_ARRIBOS_MIN)
 from sim.production_sim import generar_diagnostico as diagnostico_produccion
-from sim.sensorial_sim import (DESCRIPTORES, N_COMENSALES as SENS_N_COMENSALES,
-                               N_PREGUNTAS, SensorialAggregated, UMBRAL_ACEPTACION)
+from sim.sensorial_sim import (ATRIBUTOS_BOOL, ATRIBUTOS_SLIDER, ETIQUETAS,
+                               N_COMENSALES as SENS_N_COMENSALES,
+                               N_PREGUNTAS_TOTAL, SensorialAggregated, UMBRAL_ACEPTACION)
 from sim.sensorial_sim import generar_diagnostico as diagnostico_sensorial
+from sim.sensorial_sim import resumen_demografico
 from utils import charts
 
 # Datos institucionales del Grupo 2 para la portada del reporte.
@@ -122,11 +124,13 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         _png_temporal(charts.figura_stock(agg_prod), "stock"),
     ]
     png_conex, png_box, png_stock = pngs
-    png_desc = png_sens = None
+    png_perfil = png_sino = png_demo = png_sens = None
     if agg_sensorial is not None:
-        png_desc = _png_temporal(charts.figura_descriptores(agg_sensorial), "desc")
+        png_perfil = _png_temporal(charts.figura_perfil(agg_sensorial), "perfil")
+        png_sino = _png_temporal(charts.figura_si_no(agg_sensorial), "sino")
+        png_demo = _png_temporal(charts.figura_demografia(agg_sensorial), "demo")
         png_sens = _png_temporal(charts.figura_sensibilidad(agg_sensorial), "sens")
-        pngs.extend([png_desc, png_sens])
+        pngs.extend([png_perfil, png_sino, png_demo, png_sens])
 
     # --- 2) Estilos (aproximacion a APA 7: Times New Roman, jerarquia clara) ---
     base = getSampleStyleSheet()
@@ -332,32 +336,53 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     # SECCION 3 - ACEPTACION SENSORIAL DEL PRODUCTO (MONTE CARLO)
     # =====================================================================
     if agg_sensorial is not None:
+        demo = resumen_demografico(agg_sensorial)
         story.append(PageBreak())
         story.append(Paragraph(
             "Seccion 3. Aceptacion sensorial del producto (simulacion Monte Carlo)",
             st_h2))
         story.append(Paragraph(
             "Se estimo por el metodo de Monte Carlo la aceptacion de la tartaleta vegetal "
-            f"a partir de {SENS_N_COMENSALES} jueces que puntuan {N_PREGUNTAS} preguntas "
-            "(escala hedonica de 1 a 9) agrupadas en cuatro descriptores sensoriales. La "
-            "calidad de preparacion en cocina gobierna las medias de las distribuciones de "
-            "puntaje, y un efecto aleatorio por comensal modela la exigencia individual de "
-            "cada juez. Un comensal acepta el producto si su puntaje promedio es mayor o "
-            f"igual a {UMBRAL_ACEPTACION}.", st_body))
+            f"a partir de {SENS_N_COMENSALES} comensales que responden la encuesta real de "
+            f"{N_PREGUNTAS_TOTAL} preguntas: ocho atributos en escala 1-10, dos preguntas "
+            "dicotomicas (Si/No) y los datos demograficos (ano de nacimiento y sexo), "
+            "agrupados en cinco dimensiones sensoriales (Vista, Olfato, Tacto y Oido, Gusto "
+            "y Boca, Sabor). La calidad de preparacion en cocina gobierna las medias de las "
+            "distribuciones, y un efecto aleatorio por comensal modela la exigencia "
+            "individual de cada juez. Un comensal acepta el producto si su sabor general es "
+            f"mayor o igual a {UMBRAL_ACEPTACION}.", st_body))
         story.append(Spacer(1, 0.3 * cm))
 
+        # 3.a) Perfil demografico del panel.
         story.append(Paragraph(
-            "Tabla 4. <i>Aceptacion sensorial y puntaje por descriptor (promedio e IC 95%).</i>",
+            "Tabla 4. <i>Perfil demografico del panel de comensales.</i>", st_body))
+        datos_demo = [
+            ["Indicador", "Valor"],
+            ["Comensales del panel", f"{demo.n}"],
+            ["Sexo masculino", f"{demo.n_masculino} ({demo.pct_masculino:.0f} %)"],
+            ["Sexo femenino", f"{demo.n_femenino} ({demo.pct_femenino:.0f} %)"],
+            ["Edad media (anios)", f"{demo.edad_media:.1f}"],
+            ["Rango de edades (anios)", f"{demo.edad_min} - {demo.edad_max}"],
+        ]
+        tabla_demo = Table(datos_demo, colWidths=[9.5 * cm, 6.5 * cm])
+        tabla_demo.setStyle(_estilo_tabla(colors))
+        story.append(tabla_demo)
+        story.append(Spacer(1, 0.35 * cm))
+
+        # 3.b) Aceptacion global y perfil de los 8 atributos numericos.
+        story.append(Paragraph(
+            "Tabla 5. <i>Aceptacion y perfil de atributos numericos (promedio e IC 95%).</i>",
             st_body))
         datos_sens = [["Indicador", "Promedio [IC 95%]"],
                       ["Calidad de preparacion en cocina (1-10)",
                        f"{agg_sensorial.config.calidad_cocina}"],
                       ["Tasa de Aceptacion Global (%)",
                        _ic_txt(agg_sensorial, "tasa_aceptacion")],
-                      ["Puntaje global medio (1-9)",
+                      ["Puntaje global medio (1-10)",
                        _ic_txt(agg_sensorial, "puntaje_global", 2)]]
-        for d in DESCRIPTORES:
-            datos_sens.append([f"Descriptor {d} (1-9)", _ic_txt(agg_sensorial, f"desc_{d}", 2)])
+        for attr in ATRIBUTOS_SLIDER:
+            datos_sens.append([f"{ETIQUETAS[attr]} (1-10)",
+                               _ic_txt(agg_sensorial, attr, 2)])
         tabla_sens = Table(datos_sens, colWidths=[9.5 * cm, 6.5 * cm])
         tabla_sens.setStyle(_estilo_tabla(colors))
         story.append(tabla_sens)
@@ -368,14 +393,40 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
             "iteraciones Monte Carlo.", st_diag))
         story.append(Spacer(1, 0.35 * cm))
 
+        # 3.c) Preguntas dicotomicas Si/No.
         story.append(Paragraph(
-            "Figura 4. <i>Puntaje medio por descriptor sensorial (umbral de aceptacion = 6).</i>",
+            "Tabla 6. <i>Preguntas cualitativas: porcentaje de 'Si' (promedio e IC 95%).</i>",
+            st_body))
+        datos_bool = [["Pregunta (Si / No)", "% Si [IC 95%]"]]
+        for b in ATRIBUTOS_BOOL:
+            datos_bool.append([ETIQUETAS[b], _ic_txt(agg_sensorial, f"prop_{b}")])
+        tabla_bool = Table(datos_bool, colWidths=[9.5 * cm, 6.5 * cm])
+        tabla_bool.setStyle(_estilo_tabla(colors))
+        story.append(tabla_bool)
+        story.append(Spacer(1, 0.35 * cm))
+
+        # 3.d) Figuras del analisis sensorial.
+        story.append(PageBreak())
+        story.append(Paragraph(
+            "Figura 4. <i>Perfil sensorial: puntaje medio por atributo (umbral de aceptacion = 6).</i>",
             st_body))
         story.append(Spacer(1, 0.2 * cm))
-        story.append(Image(png_desc, width=16.0 * cm, height=16.0 * cm * 3.2 / 7.2))
+        story.append(Image(png_perfil, width=16.0 * cm, height=16.0 * cm * 3.6 / 7.2))
         story.append(Spacer(1, 0.35 * cm))
         story.append(Paragraph(
-            "Figura 5. <i>Analisis de sensibilidad: aceptacion global vs calidad del Sabor.</i>",
+            "Figura 5. <i>Preguntas cualitativas (Si / No) sobre el total de comensales.</i>",
+            st_body))
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Image(png_sino, width=16.0 * cm, height=16.0 * cm * 2.4 / 7.2))
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(Paragraph(
+            "Figura 6. <i>Perfil demografico del panel: distribucion de edades y sexo.</i>",
+            st_body))
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Image(png_demo, width=16.0 * cm, height=16.0 * cm * 3.0 / 7.2))
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(Paragraph(
+            "Figura 7. <i>Analisis de sensibilidad: aceptacion global vs Sabor general.</i>",
             st_body))
         story.append(Spacer(1, 0.2 * cm))
         story.append(Image(png_sens, width=16.0 * cm, height=16.0 * cm * 3.2 / 7.2))
@@ -396,7 +447,7 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         story.append(Paragraph(texto, st_diag))
     story.append(Spacer(1, 0.6 * cm))
     story.append(Paragraph(
-        "Reporte generado automaticamente por la Suite de Simulacion v3.0 - Grupo 2.",
+        "Reporte generado automaticamente por la Suite de Simulacion v4.0 - Grupo 2.",
         st_pie))
 
     # --- Construir el documento sobre un buffer en memoria ---

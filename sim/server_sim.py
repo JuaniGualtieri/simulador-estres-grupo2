@@ -38,7 +38,7 @@ DEFINICION FORMAL DEL SISTEMA
 DISTRIBUCIONES ESTADISTICAS (segun consigna de catedra)
 -------------------------------------------------------
 * Tasa de Arribos ......... EXPONENCIAL (llegada de los comensales en la jornada).
-* Tiempo de Llenado ....... UNIFORME(45, 90) s (justificado por los 24 inputs).
+* Tiempo de Llenado ....... UNIFORME(45, 90) s (justificado por las 12 preguntas de la encuesta).
 * Tiempo de Respuesta /
   retencion de conexion .... NORMAL(media, desvio) por escenario (latencia hacia
                              Supabase). El "Esperado" usa NORMAL(0,25 s; 0,05 s).
@@ -81,7 +81,7 @@ from sim.estadistica import (cuantil_ic95, intervalo_confianza_95)
 # =============================================================================
 POOLER_CAPACITY = 60          # LIMITE por defecto de conexiones simultaneas (hardware).
 GATEWAY_TIMEOUT = 8.0         # seg. Umbral de timeout del gateway/HTTP -> dispara 504.
-N_PREGUNTAS_ENCUESTA = 24     # Auditado en js/encuesta.js (24 sliders hedonicos).
+N_PREGUNTAS_ENCUESTA = 12     # Campos obligatorios de la encuesta real (8 sliders + 2 Si/No + 2 datos).
 FILL_TIME_MIN = 45.0          # seg. Tiempo minimo de llenado (Uniforme).
 FILL_TIME_MAX = 90.0          # seg. Tiempo maximo de llenado (Uniforme).
 BACKOFF_MIN = 0.8             # seg. Espera minima del comensal antes de reintentar.
@@ -415,7 +415,7 @@ def proceso_comensal(env: simpy.Environment, idx: int, monitor: PoolerMonitor,
     """Ciclo de vida de un comensal: llenar el formulario y enviar (con reintentos)."""
     resultado = monitor.resultado
 
-    # Evento 2: llenado del formulario (24 sliders) -> UNIFORME(45, 90) s.
+    # Evento 2: llenado del formulario (12 preguntas) -> UNIFORME(45, 90) s.
     yield env.timeout(rng.uniform(FILL_TIME_MIN, FILL_TIME_MAX))
 
     # Eventos 3 y 4: click en enviar -> peticion -> persistencia, con reintentos.
