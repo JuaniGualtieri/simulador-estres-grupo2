@@ -48,10 +48,12 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 import simpy
+
+from sim.estadistica import cuantil_ic95, intervalo_confianza_95
 
 # ---------------------------------------------------------------------------
 # PARAMETROS DEL MODELO DE PRODUCCION (tiempos en MINUTOS)
@@ -71,10 +73,26 @@ ENSAMBLE_MAX = 5.0           # Etapa 3: maximo de la UNIFORME (min).
 SEED_BASE = 2026             # Semilla base (anio del evento) para reproducibilidad.
 N_REPLICAS_DEFAULT = 20      # Replicas para estabilizar los KPIs escalares.
 
-# Valores por defecto de los sliders de la Pestania 2.
+# ---------------------------------------------------------------------------
+# PARAMETROS ECONOMICO-FINANCIEROS (escenario de emprendimiento, en pesos ARS)
+# ---------------------------------------------------------------------------
+# Modelan la pregunta de Nutricion de la Parte 2 del TPI: "si el producto se
+# comercializara, cuanto se gana por jornada y en cuantas jornadas se recupera la
+# inversion inicial". Son valores POR DEFECTO, totalmente parametrizables por la UI.
+COSTO_MP_LOTE = 7200.0          # Costo de materia prima por lote de 6 unidades (~$1.200 c/u).
+PRECIO_VENTA_UNIDAD = 3000.0    # Precio de venta sugerido por tartaleta al publico.
+COSTO_OPERARIO_JORNADA = 15000.0  # Costo fijo por operario por jornada de produccion.
+INVERSION_INICIAL = 500000.0    # Inversion inicial en equipamiento de cocina (horno, mesada, utensilios).
+
+# Valores por defecto de los sliders/campos de la Pestania 2.
 SLIDER_DEFAULTS = {
     "operarios": 2,    # Rango [1 - 5].
     "horno": 2,        # Rango [1 - 4] lotes simultaneos.
+    # Parametros economicos editables (number_input).
+    "costo_mp_lote": COSTO_MP_LOTE,
+    "precio_venta": PRECIO_VENTA_UNIDAD,
+    "costo_operario": COSTO_OPERARIO_JORNADA,
+    "inversion_inicial": INVERSION_INICIAL,
 }
 
 
@@ -85,6 +103,11 @@ class ProductionConfig:
     horno_slots: int        # Capacidad del horno en lotes simultaneos (SLIDER [1-4]).
     n_comensales: int = N_COMENSALES
     ventana_arribos_min: float = VENTANA_ARRIBOS_MIN
+    # --- Parametros economico-financieros (escenario de emprendimiento) ---
+    costo_mp_lote: float = COSTO_MP_LOTE          # Costo materia prima por lote.
+    precio_venta_unidad: float = PRECIO_VENTA_UNIDAD  # Precio de venta por tartaleta.
+    costo_operario_jornada: float = COSTO_OPERARIO_JORNADA  # Costo fijo por operario/jornada.
+    inversion_inicial: float = INVERSION_INICIAL  # Inversion inicial en equipamiento.
 
     @property
     def tasa_arribo_media(self) -> float:
@@ -105,6 +128,7 @@ class ProductionReplicaResult:
     tiempo_total: float = 0.0            # Duracion simulada (min).
     tiempos_fabricacion: List[float] = field(default_factory=list)  # Por lote (min).
     esperas: List[float] = field(default_factory=list)              # Por comensal (min).
+    interarribos: List[float] = field(default_factory=list)         # V&V del generador (min).
     # Serie temporal del nivel de stock (para la corrida representativa).
     serie_t: List[float] = field(default_factory=list)
     serie_stock: List[int] = field(default_factory=list)
@@ -129,11 +153,20 @@ class ProductionReplicaResult:
 
 @dataclass
 class ProductionAggregated:
-    """KPIs agregados (media) sobre N replicas + serie de stock representativa."""
+    """KPIs agregados (media + IC 95%) sobre N replicas + serie de stock representativa."""
     n_replicas: int
     config: ProductionConfig
     medias: Dict[str, float] = field(default_factory=dict)
     desvios: Dict[str, float] = field(default_factory=dict)
+    ic_inf: Dict[str, float] = field(default_factory=dict)   # Limite inferior IC 95%.
+    ic_sup: Dict[str, float] = field(default_factory=dict)   # Limite superior IC 95%.
+    muestras: Dict[str, List[float]] = field(default_factory=dict)  # Valores crudos por KPI.
+    # Trazabilidad del metodo de IC aplicado (t-Student vs Normal) segun n replicas.
+    metodo_ic: str = "na"          # "t", "normal" o "na" (n<2).
+    cuantil_ic: float = 0.0        # Valor critico aplicado (t o Z).
+    gl_ic: int = 0                 # Grados de libertad (n-1).
+    n_muestral: int = 0            # Cantidad de replicas (tamanio de la muestra).
+    interarribos: List[float] = field(default_factory=list)  # V&V del generador (min).
     serie_t: List[float] = field(default_factory=list)
     serie_stock: List[int] = field(default_factory=list)
 
@@ -142,6 +175,39 @@ class ProductionAggregated:
 
     def desvio(self, clave: str) -> float:
         return self.desvios.get(clave, 0.0)
+
+    def ic(self, clave: str) -> Tuple[float, float]:
+        """Devuelve (limite_inferior, limite_superior) del IC 95% de un KPI."""
+        return self.ic_inf.get(clave, 0.0), self.ic_sup.get(clave, 0.0)
+
+    def muestra(self, clave: str) -> List[float]:
+        return self.muestras.get(clave, [])
+
+    @property
+    def ic_disponible(self) -> bool:
+        """True si hubo >=2 replicas para estimar la variabilidad (hay IC)."""
+        return self.metodo_ic != "na"
+
+    @property
+    def etiqueta_metodo_ic(self) -> str:
+        """Descripcion legible del metodo de IC (para la UI y el reporte PDF)."""
+        if self.metodo_ic == "t":
+            return f"t-Student (gl={self.gl_ic}, t={self.cuantil_ic:.3f})"
+        if self.metodo_ic == "normal":
+            return f"Normal estandar (Z={self.cuantil_ic:.3f})"
+        return "No disponible (1 sola corrida)"
+
+    @property
+    def payback_jornadas(self) -> float:
+        """Cantidad de jornadas/eventos para recuperar la inversion inicial.
+
+        Payback = Inversion / Rentabilidad media por jornada. Devuelve math.inf si la
+        jornada no es rentable (rentabilidad <= 0): la inversion no se recupera.
+        """
+        rent = self.media("rentabilidad")
+        if rent <= 0:
+            return math.inf
+        return self.config.inversion_inicial / rent
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +316,9 @@ def _generador_arribos(env: simpy.Environment, monitor: StockMonitor,
     resultado = monitor.resultado
     for _ in range(cfg.n_comensales):
         env.process(proceso_comensal(env, monitor, resultado))
-        yield env.timeout(rng.exponential(cfg.tasa_arribo_media))
+        dt = rng.exponential(cfg.tasa_arribo_media)
+        resultado.interarribos.append(dt)   # Muestra para la validacion V&V.
+        yield env.timeout(dt)
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +347,35 @@ def correr_replica(cfg: ProductionConfig, semilla: int) -> ProductionReplicaResu
     return resultado
 
 
+def _finanzas_replica(r: ProductionReplicaResult, cfg: ProductionConfig) -> Dict[str, float]:
+    """Indicadores economicos (ARS) de UNA jornada simulada (escenario de venta).
+
+    Las tartaletas vendidas son las efectivamente retiradas por los comensales; los
+    lotes pre-cocidos del stock inicial tambien consumieron materia prima, por lo que
+    se incluyen en el costo variable.
+    """
+    unidades_vendidas = float(r.servidos)
+    ingresos = unidades_vendidas * cfg.precio_venta_unidad
+    lotes_totales = r.lotes_producidos + STOCK_INICIAL_LOTES
+    costo_variable = lotes_totales * cfg.costo_mp_lote
+    costo_fijo = cfg.operarios * cfg.costo_operario_jornada
+    rentabilidad = ingresos - costo_variable - costo_fijo
+    return {
+        "unidades_vendidas": unidades_vendidas,
+        "ingresos": ingresos,
+        "costo_variable": costo_variable,
+        "costo_fijo": costo_fijo,
+        "costo_total": costo_variable + costo_fijo,
+        "rentabilidad": rentabilidad,
+    }
+
+
 def correr_experimento(cfg: ProductionConfig, n_replicas: int = N_REPLICAS_DEFAULT,
                        semilla_base: int = SEED_BASE,
                        progreso: Callable[[int, int], None] | None = None
                        ) -> ProductionAggregated:
-    """Ejecuta N replicas de la cadena de produccion, promedia los KPIs escalares y
-    conserva la serie de stock de la primera corrida como corrida representativa."""
+    """Ejecuta N replicas de la cadena de produccion, agrega los KPIs (media + IC 95%)
+    y conserva la serie de stock de la primera corrida como corrida representativa."""
     replicas: List[ProductionReplicaResult] = []
     for rep in range(n_replicas):
         replicas.append(correr_replica(cfg, semilla_base + rep))
@@ -305,10 +396,25 @@ def correr_experimento(cfg: ProductionConfig, n_replicas: int = N_REPLICAS_DEFAU
         "tiempo_total": _serie(lambda r: r.tiempo_total),
     }
 
+    # KPIs economico-financieros por replica (req. 3): se agregan con el mismo IC 95%.
+    finanzas = [_finanzas_replica(r, cfg) for r in replicas]
+    for clave in ("unidades_vendidas", "ingresos", "costo_variable", "costo_fijo",
+                  "costo_total", "rentabilidad"):
+        metricas[clave] = [f[clave] for f in finanzas]
+
     agg = ProductionAggregated(n_replicas=n_replicas, config=cfg)
     for clave, valores in metricas.items():
-        agg.medias[clave] = statistics.fmean(valores)
+        ic = intervalo_confianza_95(valores)   # t-Student o Normal segun n (req. 1 y 2).
+        agg.medias[clave] = ic.media
         agg.desvios[clave] = statistics.pstdev(valores) if len(valores) > 1 else 0.0
+        agg.ic_inf[clave] = ic.inf
+        agg.ic_sup[clave] = ic.sup
+        agg.muestras[clave] = valores
+
+    # Trazabilidad del metodo de IC e interarribos para la validacion del generador.
+    agg.cuantil_ic, agg.metodo_ic, agg.gl_ic = cuantil_ic95(n_replicas)
+    agg.n_muestral = n_replicas
+    agg.interarribos = [dt for r in replicas for dt in r.interarribos]
 
     rep0 = replicas[0]
     agg.serie_t = rep0.serie_t
@@ -327,6 +433,11 @@ def generar_diagnostico(agg: ProductionAggregated) -> str:
     en_espera = agg.media("comensales_en_espera")
     remanente = agg.media("stock_remanente")
     fab = agg.media("tiempo_fab_promedio")
+    ingresos = agg.media("ingresos")
+    costo_total = agg.media("costo_total")
+    rentabilidad = agg.media("rentabilidad")
+    vendidas = agg.media("unidades_vendidas")
+    payback = agg.payback_jornadas
 
     lineas: List[str] = []
     lineas.append(f"DIAGNOSTICO DE PRODUCCION (promedio de {agg.n_replicas} corrida/s)")
@@ -353,6 +464,25 @@ def generar_diagnostico(agg: ProductionAggregated) -> str:
             "La cocina no acompania el ritmo de consumo.")
 
     lineas.append(f"Stock remanente al cierre: {remanente:.0f} tartaletas.")
+
+    # Analisis economico-financiero (escenario de emprendimiento - Parte 2 del TPI).
+    lineas.append("")
+    lineas.append("ANALISIS ECONOMICO (escenario de venta):")
+    lineas.append(
+        f"Con {vendidas:.0f} tartaletas vendidas a ${cfg.precio_venta_unidad:,.0f} c/u, "
+        f"los ingresos de la jornada son ${ingresos:,.0f} y los costos totales "
+        f"${costo_total:,.0f} (materia prima + operarios).")
+    if rentabilidad > 0:
+        lineas.append(
+            f"Rentabilidad proyectada por jornada: ${rentabilidad:,.0f} (POSITIVA). "
+            f"La inversion inicial de ${cfg.inversion_inicial:,.0f} se recupera en "
+            f"aproximadamente {payback:.1f} jornadas/eventos.")
+    else:
+        lineas.append(
+            f"Rentabilidad proyectada por jornada: ${rentabilidad:,.0f} (NEGATIVA). "
+            f"Con esta configuracion la jornada NO es rentable y la inversion de "
+            f"${cfg.inversion_inicial:,.0f} no se recupera: revise precio, escala o costos.")
+
     lineas.append("")
     lineas.append("RECOMENDACIONES:")
     if espera_max > 5:
@@ -365,4 +495,11 @@ def generar_diagnostico(agg: ProductionAggregated) -> str:
                       "tamanio de lote para evitar desperdicio de alimento.")
     if en_espera < 1 and remanente <= 2 * TARTALETAS_POR_LOTE:
         lineas.append("  - Configuracion equilibrada: mantenerla para el evento real.")
+    if rentabilidad <= 0:
+        lineas.append("  - Revisar el modelo de negocio: subir el precio de venta sugerido, "
+                      "comprar materia prima a escala o reducir el costo fijo de operarios "
+                      "para volver rentable la jornada.")
+    elif payback > 0 and payback != float("inf"):
+        lineas.append(f"  - Modelo de venta viable: con la demanda simulada, el "
+                      f"emprendimiento recupera la inversion en ~{payback:.0f} jornadas.")
     return "\n".join(lineas)

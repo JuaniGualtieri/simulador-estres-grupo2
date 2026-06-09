@@ -21,6 +21,8 @@ from matplotlib.figure import Figure
 
 from sim.server_sim import POOLER_CAPACITY, AggregatedResult
 from sim.production_sim import ProductionAggregated
+from sim.sensorial_sim import (DESCRIPTORES, ESCALA_MAX, UMBRAL_ACEPTACION,
+                               SensorialAggregated)
 
 # ---- Paleta premium interdisciplinaria (verde agroecologico + ambar) ----
 VERDE = "#2E7D32"
@@ -169,6 +171,61 @@ def dibujar_curva_stock(ax, agg: ProductionAggregated) -> None:
 
 
 # ===========================================================================
+# PESTANIA 3 - GRAFICO A: puntaje medio por descriptor sensorial (barras)
+# ===========================================================================
+def dibujar_descriptores(ax, agg: SensorialAggregated) -> None:
+    """Barras horizontales del puntaje medio (1-9) de cada descriptor sensorial.
+
+    Marca el umbral de aceptacion (>= 6) con una linea ambar; las barras que lo superan
+    se pintan verdes y las que no, ambar, con su IC 95% como barra de error.
+    """
+    ax.clear()
+    nombres = list(DESCRIPTORES)
+    medias = [agg.media_descriptor(d) for d in nombres]
+    errores = [max(0.0, agg.media_descriptor(d) - agg.ic(f"desc_{d}")[0]) for d in nombres]
+    colores = [VERDE if m >= UMBRAL_ACEPTACION else AMBAR for m in medias]
+
+    y = list(range(len(nombres)))
+    ax.barh(y, medias, color=colores, alpha=0.85, height=0.6, zorder=3,
+            xerr=errores if agg.ic_disponible else None,
+            error_kw=dict(ecolor=TXT_TICK, capsize=4, elinewidth=1.0))
+    for yi, m in zip(y, medias):
+        ax.text(m + 0.12, yi, f"{m:.2f}", va="center", fontsize=9, color=TXT_TITULO)
+
+    ax.axvline(UMBRAL_ACEPTACION, color=NARANJA, linestyle="--", linewidth=1.4,
+               label=f"Umbral de aceptacion ({UMBRAL_ACEPTACION})", zorder=2)
+    ax.set_yticks(y)
+    ax.set_yticklabels(nombres)
+    ax.set_xlim(0, ESCALA_MAX + 0.6)
+    ax.invert_yaxis()
+    _estilizar_ejes(ax, "Puntaje medio por descriptor sensorial (escala 1-9)",
+                    "Puntaje hedonico medio", "")
+    ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9)
+
+
+# ===========================================================================
+# PESTANIA 3 - GRAFICO B: analisis de sensibilidad del descriptor Sabor
+# ===========================================================================
+def dibujar_sensibilidad_sabor(ax, agg: SensorialAggregated) -> None:
+    """Curva de aceptacion global (%) en funcion de la calidad del descriptor Sabor."""
+    ax.clear()
+    x = list(agg.sens_sabor_medias)
+    y = list(agg.sens_aceptacion)
+    if x and y:
+        ax.fill_between(x, y, color=NARANJA, alpha=0.12, zorder=1)
+        ax.plot(x, y, color=NARANJA, linewidth=2.2, marker="o", markersize=5,
+                markerfacecolor="white", markeredgecolor=NARANJA, zorder=3,
+                label="Aceptacion global proyectada")
+        ax.axhline(UMBRAL_ACEPTACION * 0 + 80, color=VERDE, linestyle=":",
+                   linewidth=1.2, alpha=0.8, label="Meta comercial (80%)", zorder=2)
+    ax.set_ylim(0, 105)
+    ax.set_xlim(min(x) if x else 1, max(x) if x else 9)
+    _estilizar_ejes(ax, "Sensibilidad: aceptacion vs calidad del Sabor",
+                    "Puntaje medio objetivo del Sabor (1-9)", "Aceptacion global (%)")
+    ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9)
+
+
+# ===========================================================================
 # FABRICAS DE FIGURAS (para PDF y para usos puntuales fuera de Streamlit)
 # ===========================================================================
 def figura_conexiones(agg: AggregatedResult, figsize=(7.2, 4.0), dpi=150) -> Figure:
@@ -188,5 +245,19 @@ def figura_boxplot(agg: AggregatedResult, figsize=(7.2, 3.2), dpi=150) -> Figure
 def figura_stock(agg: ProductionAggregated, figsize=(7.2, 4.0), dpi=150) -> Figure:
     fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
     dibujar_curva_stock(fig.add_subplot(111), agg)
+    fig.tight_layout()
+    return fig
+
+
+def figura_descriptores(agg: SensorialAggregated, figsize=(7.2, 3.2), dpi=150) -> Figure:
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
+    dibujar_descriptores(fig.add_subplot(111), agg)
+    fig.tight_layout()
+    return fig
+
+
+def figura_sensibilidad(agg: SensorialAggregated, figsize=(7.2, 3.2), dpi=150) -> Figure:
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
+    dibujar_sensibilidad_sabor(fig.add_subplot(111), agg)
     fig.tight_layout()
     return fig

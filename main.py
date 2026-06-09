@@ -28,7 +28,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from views import tab_production, tab_server
+from views import tab_production, tab_sensorial, tab_server
 from views.theme import PALETA, inyectar_css
 from utils import pdf_generator
 
@@ -64,23 +64,27 @@ def _panel_reporte() -> None:
 
         tiene_srv = tab_server.K_RESULT in st.session_state
         tiene_prod = tab_production.K_RESULT in st.session_state
+        tiene_sens = tab_sensorial.K_RESULT in st.session_state
 
-        if not (tiene_srv and tiene_prod):
+        if not (tiene_srv and tiene_prod and tiene_sens):
             faltan = []
             if not tiene_srv:
                 faltan.append("Pestania 1 (servidor)")
             if not tiene_prod:
                 faltan.append("Pestania 2 (produccion)")
-            st.caption("Ejecuta ambas simulaciones para habilitar el reporte. "
+            if not tiene_sens:
+                faltan.append("Pestania 3 (sensorial)")
+            st.caption("Ejecuta las tres simulaciones para habilitar el reporte bifocal. "
                        "Falta: " + ", ".join(faltan) + ".")
             return
 
         if st.button("Compilar reporte PDF", type="primary", width="stretch"):
             agg_srv, cfg_srv = st.session_state[tab_server.K_RESULT]
             agg_prod = st.session_state[tab_production.K_RESULT]
+            agg_sens = st.session_state[tab_sensorial.K_RESULT]
             with st.spinner("Compilando reporte unificado..."):
                 st.session_state["pdf_bytes"] = pdf_generator.generar_reporte_pdf(
-                    agg_srv, cfg_srv, agg_prod)
+                    agg_srv, cfg_srv, agg_prod, agg_sens)
             st.success("Reporte compilado.")
 
         if "pdf_bytes" in st.session_state:
@@ -100,14 +104,17 @@ def main() -> None:
 
     _panel_reporte()
 
-    tab1, tab2 = st.tabs([
+    tab1, tab2, tab3 = st.tabs([
         "🌐  Infraestructura Web & Concurrencia",
         "🍳  Cadena de Produccion & Abastecimiento",
+        "🥗  Aceptacion Sensorial (Monte Carlo)",
     ])
     with tab1:
         tab_server.render()
     with tab2:
         tab_production.render()
+    with tab3:
+        tab_sensorial.render()
 
     st.caption(
         f"Generado por el Simulador Intercátedra · Grupo 2 · "

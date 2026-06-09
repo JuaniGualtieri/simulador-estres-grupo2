@@ -16,8 +16,9 @@ from __future__ import annotations
 import streamlit as st
 
 from sim import server_sim as srv
+from sim.estadistica import validar_generador_arribos
 from utils import charts
-from views.theme import PALETA, tarjeta_kpi
+from views.theme import PALETA, bloque_validacion, tarjeta_kpi
 
 # Claves de session_state usadas por esta pestania.
 K_PRESET = "srv_preset"
@@ -100,8 +101,19 @@ def _ejecutar() -> None:
 def _mostrar_kpis(agg: srv.AggregatedResult, cfg: srv.ScenarioConfig) -> None:
     """Tarjetas de KPI con el formato riguroso 'Promedio [Lim.Inf - Lim.Sup]'."""
     def ic(clave: str, dec: int = 1) -> str:
+        # Con 1 sola corrida NO hay dispersion estimable: se oculta el IC (req. 1).
+        if not agg.ic_disponible:
+            return "1 corrida · sin IC (requiere ≥2)"
         inf, sup = agg.ic(clave)
         return f"IC95% [{inf:.{dec}f} - {sup:.{dec}f}]"
+
+    if agg.ic_disponible:
+        st.caption(f"Intervalos de Confianza del 95% calculados por **{agg.etiqueta_metodo_ic}** "
+                   f"sobre {agg.n_replicas} réplicas.")
+    else:
+        st.warning("Ejecutaste **1 sola réplica**: no es posible estimar la variabilidad "
+                   "ni construir Intervalos de Confianza. Usá 10, 30 o 50 réplicas para "
+                   "el análisis estadístico (t-Student / Normal).")
 
     tasa = 100.0 * agg.media("exitos") / cfg.n_comensales if cfg.n_comensales else 0.0
     fila1 = st.columns(3)
@@ -159,3 +171,8 @@ def render() -> None:
         _mostrar_graficos(agg)
         with st.expander("Diagnostico y recomendaciones", expanded=True):
             st.code(srv.generar_diagnostico(agg, cfg), language=None)
+
+        # Validacion y Verificacion del generador de arribos (req. 5).
+        validacion = validar_generador_arribos(
+            agg.interarribos, cfg.tasa_arribo_media, unidad="s")
+        bloque_validacion(validacion)

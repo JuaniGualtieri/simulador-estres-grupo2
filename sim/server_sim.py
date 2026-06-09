@@ -56,13 +56,14 @@ y la curva de conexiones ocupadas crece de forma dinamica y realista.
 
 from __future__ import annotations
 
-import math
 import statistics
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 import simpy
+
+from sim.estadistica import (cuantil_ic95, intervalo_confianza_95)
 
 # =============================================================================
 # DOS NUMEROS QUE NO HAY QUE CONFUNDIR (aclaracion para la catedra)
@@ -87,7 +88,8 @@ BACKOFF_MIN = 0.8             # seg. Espera minima del comensal antes de reinten
 BACKOFF_MAX = 3.0             # seg. Espera maxima del comensal antes de reintentar.
 SEED_BASE = 2026              # Semilla base (anio del evento) para reproducibilidad.
 N_REPLICAS_DEFAULT = 30       # Replicas por defecto para estabilizar promedios.
-Z_95 = 1.959963984540054      # Cuantil de la Normal estandar para el IC del 95%.
+# El cuantil del IC 95% (t-Student para n<30, Normal Z=1,96 para n>=30) y su seleccion
+# automatica viven en sim/estadistica.py para no duplicar la matematica del muestreo.
 
 # Etiquetas de resultado de un intento de envio.
 EXITO = "EXITO"
@@ -231,6 +233,8 @@ class ReplicaResult:
     serie_t: List[float] = field(default_factory=list)
     serie_conexiones: List[int] = field(default_factory=list)
     serie_cola: List[int] = field(default_factory=list)
+    # Tiempos entre arribos generados por la Exponencial (validacion V&V del generador).
+    interarribos: List[float] = field(default_factory=list)
 
     @property
     def total_504(self) -> int:
@@ -254,9 +258,29 @@ class AggregatedResult:
     ic_inf: Dict[str, float] = field(default_factory=dict)   # Limite inferior IC 95%.
     ic_sup: Dict[str, float] = field(default_factory=dict)   # Limite superior IC 95%.
     muestras: Dict[str, List[float]] = field(default_factory=dict)  # Valores crudos por KPI.
+    # Trazabilidad del metodo de IC aplicado (t-Student vs Normal) segun n replicas.
+    metodo_ic: str = "na"          # "t", "normal" o "na" (n<2).
+    cuantil_ic: float = 0.0        # Valor critico aplicado (t o Z).
+    gl_ic: int = 0                 # Grados de libertad (n-1).
+    n_muestral: int = 0            # Cantidad de replicas (tamanio de la muestra).
+    interarribos: List[float] = field(default_factory=list)  # V&V del generador.
     serie_t: List[float] = field(default_factory=list)
     serie_conexiones: List[int] = field(default_factory=list)
     serie_cola: List[int] = field(default_factory=list)
+
+    @property
+    def ic_disponible(self) -> bool:
+        """True si hubo >=2 replicas para estimar la variabilidad (hay IC)."""
+        return self.metodo_ic != "na"
+
+    @property
+    def etiqueta_metodo_ic(self) -> str:
+        """Descripcion legible del metodo de IC (para la UI y el reporte PDF)."""
+        if self.metodo_ic == "t":
+            return f"t-Student (gl={self.gl_ic}, t={self.cuantil_ic:.3f})"
+        if self.metodo_ic == "normal":
+            return f"Normal estandar (Z={self.cuantil_ic:.3f})"
+        return "No disponible (1 sola corrida)"
 
     def media(self, clave: str) -> float:
         return self.medias.get(clave, 0.0)
@@ -425,7 +449,9 @@ def _generador_arribos(env: simpy.Environment, monitor: PoolerMonitor,
     """Evento 1: arribos de comensales segun una EXPONENCIAL de tiempos entre llegadas."""
     for idx in range(cfg.n_comensales):
         env.process(proceso_comensal(env, idx, monitor, cfg, rng))
-        yield env.timeout(rng.exponential(cfg.tasa_arribo_media))
+        dt = rng.exponential(cfg.tasa_arribo_media)
+        monitor.resultado.interarribos.append(dt)  # Muestra para la validacion V&V.
+        yield env.timeout(dt)
 
 
 def correr_replica(cfg: ScenarioConfig, semilla: int,
@@ -448,22 +474,6 @@ def correr_replica(cfg: ScenarioConfig, semilla: int,
         resultado.serie_conexiones.append(monitor.recurso.count)
         resultado.serie_cola.append(len(monitor.recurso.queue))
     return resultado
-
-
-def _intervalo_confianza_95(valores: List[float]) -> Tuple[float, float, float]:
-    """Calcula (media, lim_inferior, lim_superior) del IC del 95% por Normal.
-
-    IC 95% = media +/- Z * (s / sqrt(n)), con Z = 1,96 (Normal estandar) y s el desvio
-    muestral. Con una sola replica el intervalo colapsa en la media (no hay dispersion).
-    """
-    n = len(valores)
-    media = statistics.fmean(valores)
-    if n < 2:
-        return media, media, media
-    s = statistics.stdev(valores)            # Desvio MUESTRAL (n-1).
-    error_estandar = s / math.sqrt(n)
-    margen = Z_95 * error_estandar
-    return media, media - margen, media + margen
 
 
 def correr_experimento(cfg: ScenarioConfig, n_replicas: int = N_REPLICAS_DEFAULT,
@@ -503,12 +513,19 @@ def correr_experimento(cfg: ScenarioConfig, n_replicas: int = N_REPLICAS_DEFAULT
     agg = AggregatedResult(escenario=cfg.nombre, n_replicas=n_replicas,
                            pool_capacity=cfg.pool_capacity)
     for clave, valores in metricas.items():
-        media, inf, sup = _intervalo_confianza_95(valores)
-        agg.medias[clave] = media
+        ic = intervalo_confianza_95(valores)   # t-Student o Normal segun n (req. 1).
+        agg.medias[clave] = ic.media
         agg.desvios[clave] = statistics.pstdev(valores) if len(valores) > 1 else 0.0
-        agg.ic_inf[clave] = inf
-        agg.ic_sup[clave] = sup
+        agg.ic_inf[clave] = ic.inf
+        agg.ic_sup[clave] = ic.sup
         agg.muestras[clave] = valores
+
+    # Trazabilidad del metodo de IC (mismo n para todos los KPIs de la corrida).
+    agg.cuantil_ic, agg.metodo_ic, agg.gl_ic = cuantil_ic95(n_replicas)
+    agg.n_muestral = n_replicas
+
+    # Muestra de interarribos de TODAS las replicas para la validacion del generador.
+    agg.interarribos = [dt for r in replicas for dt in r.interarribos]
 
     rep0 = replicas[0]
     agg.serie_t = rep0.serie_t

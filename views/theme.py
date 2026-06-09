@@ -87,3 +87,40 @@ def tarjeta_kpi(col, titulo: str, valor: str, sub: str = "", color: str | None =
         """,
         unsafe_allow_html=True,
     )
+
+
+def bloque_validacion(validacion, titulo_evento: str = "los comensales") -> None:
+    """Expander de Validacion y Verificacion (V&V) del generador de arribos (req. 5).
+
+    Recibe un `ValidacionArribos` (sim.estadistica) y contrasta, en tiempo real, el
+    tiempo medio entre arribos EMPIRICO (medido sobre la simulacion) contra el TEORICO
+    esperado de la Exponencial, certificando que los generadores estan calibrados.
+    """
+    u = validacion.unidad
+    with st.expander("🔬 Validación y Verificación (V&V) del modelo", expanded=False):
+        st.markdown(
+            "**Contraste del generador de arribos.** Se compara el *Tiempo Medio "
+            "Entre Arribos* que NumPy/SimPy generaron durante la simulación contra el "
+            "valor teórico esperado de la distribución Exponencial:")
+        st.latex(r"E(X) = \frac{\text{Ventana de arribos}}{\text{Cantidad de comensales}}")
+
+        color = PALETA["verde"] if validacion.validado else PALETA["rojo"]
+        signo = "+" if validacion.desvio_pct >= 0 else ""
+        tabla = (
+            "| Métrica | Valor |\n"
+            "|---|---|\n"
+            f"| Tiempo medio entre arribos **teórico** E(X) | {validacion.media_teorica:.3f} {u} |\n"
+            f"| Tiempo medio entre arribos **empírico** (medido) | {validacion.media_empirica:.3f} {u} |\n"
+            f"| Desvío porcentual (empírico vs teórico) | {signo}{validacion.desvio_pct:.2f} % |\n"
+            f"| Desvío estándar empírico (≈ media en una Exp.) | {validacion.desvio_empirico:.3f} {u} |\n"
+            f"| Muestras de interarribos observadas | {validacion.n_muestras} |\n")
+        st.markdown(tabla)
+
+        st.markdown(
+            f"<div style='background:{PALETA['verde_suave']};border-left:6px solid {color};"
+            f"border-radius:8px;padding:10px 14px;font-size:0.86rem;color:{PALETA['txt']};'>"
+            f"<b>Veredicto:</b> {validacion.mensaje}</div>",
+            unsafe_allow_html=True)
+        st.caption(
+            "En una distribución Exponencial la media y el desvío estándar coinciden "
+            "teóricamente; su cercanía es una verificación adicional del generador.")

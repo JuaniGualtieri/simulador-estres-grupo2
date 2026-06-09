@@ -27,9 +27,12 @@ from typing import List, Optional
 from sim.server_sim import (AggregatedResult, FILL_TIME_MAX, FILL_TIME_MIN,
                             GATEWAY_TIMEOUT, ScenarioConfig)
 from sim.server_sim import generar_diagnostico as diagnostico_servidor
-from sim.production_sim import (ProductionAggregated, TARTALETAS_POR_LOTE,
-                               VENTANA_ARRIBOS_MIN)
+from sim.production_sim import (ProductionAggregated, STOCK_INICIAL_LOTES,
+                               TARTALETAS_POR_LOTE, VENTANA_ARRIBOS_MIN)
 from sim.production_sim import generar_diagnostico as diagnostico_produccion
+from sim.sensorial_sim import (DESCRIPTORES, N_COMENSALES as SENS_N_COMENSALES,
+                               N_PREGUNTAS, SensorialAggregated, UMBRAL_ACEPTACION)
+from sim.sensorial_sim import generar_diagnostico as diagnostico_sensorial
 from utils import charts
 
 # Datos institucionales del Grupo 2 para la portada del reporte.
@@ -47,22 +50,28 @@ GRUPO_INFO = {
 
 
 def _estilo_tabla(colors):
-    """Estilo visual reutilizable para las tablas APA del PDF."""
+    """Estilo de tabla segun Normas APA 7a ed.: SIN grilla, fondo blanco inmaculado y
+    solo TRES lineas horizontales negras (borde superior, bajo el encabezado y borde
+    inferior del cuerpo). Tipografia Times, encabezado en negrita."""
     from reportlab.platypus import TableStyle
-    verde = colors.HexColor("#2E7D32")
-    verde_suave = colors.HexColor("#EAF3E2")
+    negro = colors.black
     return TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), verde),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        # Tipografia y fondo (negro sobre blanco, sin relleno de color).
         ("FONTNAME", (0, 0), (-1, 0), "Times-Bold"),
         ("FONTNAME", (0, 1), (-1, -1), "Times-Roman"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, verde_suave]),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C4CFB6")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), negro),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        # Las TRES unicas lineas horizontales permitidas por APA 7.
+        ("LINEABOVE", (0, 0), (-1, 0), 1.0, negro),     # Borde superior de la tabla.
+        ("LINEBELOW", (0, 0), (-1, 0), 0.75, negro),    # Bajo la fila de encabezado.
+        ("LINEBELOW", (0, -1), (-1, -1), 1.0, negro),   # Borde inferior del cuerpo.
+        # Alineacion y espaciado.
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
     ])
 
 
@@ -74,17 +83,25 @@ def _png_temporal(fig, etiqueta: str) -> str:
     return ruta
 
 
-def _ic_txt(agg: AggregatedResult, clave: str, dec: int = 1) -> str:
-    """Formatea 'media [inf - sup]' con el IC del 95% de un KPI."""
+def _ic_txt(agg, clave: str, dec: int = 1) -> str:
+    """Formatea 'media [inf - sup]' con el IC del 95% de un KPI.
+
+    Sirve para cualquier agregado con metodos .media()/.ic() (servidor, produccion o
+    sensorial); si la corrida fue de 1 sola replica, omite el intervalo.
+    """
     media = agg.media(clave)
+    if not getattr(agg, "ic_disponible", True):
+        return f"{media:.{dec}f}  (sin IC)"
     inf, sup = agg.ic(clave)
     return f"{media:.{dec}f}  [{inf:.{dec}f} - {sup:.{dec}f}]"
 
 
 def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig,
                         agg_prod: ProductionAggregated,
+                        agg_sensorial: Optional[SensorialAggregated] = None,
                         ruta: Optional[str] = None) -> bytes:
-    """Compila el reporte unificado de ambas pestanias y devuelve sus bytes.
+    """Compila el reporte bifocal (ingenieria + salud) de las tres pestanias y devuelve
+    sus bytes. La seccion sensorial Monte Carlo se incluye si se pasa `agg_sensorial`.
 
     Si se pasa `ruta`, ademas escribe el PDF en disco (uso CLI/pruebas).
     """
@@ -105,6 +122,11 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         _png_temporal(charts.figura_stock(agg_prod), "stock"),
     ]
     png_conex, png_box, png_stock = pngs
+    png_desc = png_sens = None
+    if agg_sensorial is not None:
+        png_desc = _png_temporal(charts.figura_descriptores(agg_sensorial), "desc")
+        png_sens = _png_temporal(charts.figura_sensibilidad(agg_sensorial), "sens")
+        pngs.extend([png_desc, png_sens])
 
     # --- 2) Estilos (aproximacion a APA 7: Times New Roman, jerarquia clara) ---
     base = getSampleStyleSheet()
@@ -212,6 +234,11 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     tabla_kpi = Table(datos_kpi, colWidths=[8.0 * cm, 8.0 * cm])
     tabla_kpi.setStyle(_estilo_tabla(colors))
     story.append(tabla_kpi)
+    story.append(Spacer(1, 0.15 * cm))
+    story.append(Paragraph(
+        f"<i>Nota.</i> Intervalos de Confianza del 95% estimados por "
+        f"{agg_server.etiqueta_metodo_ic} sobre {agg_server.n_replicas} replicas "
+        "(t-Student para muestras menores a 30; Normal en caso contrario).", st_diag))
 
     # 1.c) Los dos graficos vectoriales de la Pestania 1.
     story.append(PageBreak())
@@ -247,28 +274,54 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         "Tabla 2. <i>Rendimiento de la cadena de produccion (promedio de replicas).</i>",
         st_body))
     datos_prod = [
-        ["Indicador", "Valor"],
+        ["Indicador", "Promedio [IC 95%]"],
         ["Operarios de cocina", f"{cfg_prod.operarios}"],
         ["Capacidad del horno (lotes simultaneos)", f"{cfg_prod.horno_slots}"],
         ["Comensales / ventana de arribos",
          f"{cfg_prod.n_comensales} en {VENTANA_ARRIBOS_MIN:.0f} min"],
         ["Tartaletas por lote", f"{TARTALETAS_POR_LOTE}"],
-        ["Total de tartaletas producidas", f"{agg_prod.media('tartaletas_producidas'):.0f}"],
-        ["Lotes producidos", f"{agg_prod.media('lotes_producidos'):.1f}"],
-        ["Tiempo promedio de fabricacion de un lote",
-         f"{agg_prod.media('tiempo_fab_promedio'):.1f} min"],
-        ["Tiempo maximo de espera de un comensal",
-         f"{agg_prod.media('espera_maxima'):.1f} min"],
-        ["Comensales que esperaron alimento",
-         f"{agg_prod.media('comensales_en_espera'):.1f}"],
-        ["Stock remanente al cierre", f"{agg_prod.media('stock_remanente'):.0f} tartaletas"],
+        ["Total de tartaletas producidas", _ic_txt(agg_prod, "tartaletas_producidas", 0)],
+        ["Lotes producidos", _ic_txt(agg_prod, "lotes_producidos")],
+        ["Tiempo promedio de fabricacion de un lote (min)",
+         _ic_txt(agg_prod, "tiempo_fab_promedio")],
+        ["Tiempo maximo de espera de un comensal (min)",
+         _ic_txt(agg_prod, "espera_maxima")],
+        ["Comensales que esperaron alimento", _ic_txt(agg_prod, "comensales_en_espera")],
+        ["Stock remanente al cierre (tartaletas)", _ic_txt(agg_prod, "stock_remanente", 0)],
     ]
     tabla_prod = Table(datos_prod, colWidths=[9.5 * cm, 6.5 * cm])
     tabla_prod.setStyle(_estilo_tabla(colors))
     story.append(tabla_prod)
+    story.append(Spacer(1, 0.15 * cm))
+    story.append(Paragraph(
+        f"<i>Nota.</i> Intervalos de Confianza del 95% por {agg_prod.etiqueta_metodo_ic} "
+        f"sobre {agg_prod.n_replicas} replicas.", st_diag))
+    story.append(Spacer(1, 0.35 * cm))
+
+    # 2.b) Tabla APA de viabilidad economico-financiera (escenario de venta).
+    payback = agg_prod.payback_jornadas
+    payback_txt = ("No se recupera (jornada no rentable)" if payback == float("inf")
+                   else f"{payback:.1f} jornadas / eventos")
+    story.append(Paragraph(
+        "Tabla 3. <i>Viabilidad economico-financiera del escenario de venta.</i>", st_body))
+    datos_fin = [
+        ["Concepto", "Valor (ARS)"],
+        ["Precio de venta por tartaleta", f"$ {cfg_prod.precio_venta_unidad:,.0f}"],
+        ["Costo de materia prima por lote", f"$ {cfg_prod.costo_mp_lote:,.0f}"],
+        ["Costo por operario / jornada", f"$ {cfg_prod.costo_operario_jornada:,.0f}"],
+        ["Tartaletas vendidas (servidas)", _ic_txt(agg_prod, "unidades_vendidas", 0)],
+        ["Ingresos de la jornada", _ic_txt(agg_prod, "ingresos", 0)],
+        ["Costos totales de la jornada", _ic_txt(agg_prod, "costo_total", 0)],
+        ["Rentabilidad proyectada por jornada", _ic_txt(agg_prod, "rentabilidad", 0)],
+        ["Inversion inicial en equipamiento", f"$ {cfg_prod.inversion_inicial:,.0f}"],
+        ["Recupero de la inversion (payback)", payback_txt],
+    ]
+    tabla_fin = Table(datos_fin, colWidths=[9.5 * cm, 6.5 * cm])
+    tabla_fin.setStyle(_estilo_tabla(colors))
+    story.append(tabla_fin)
     story.append(Spacer(1, 0.4 * cm))
 
-    # 2.b) Grafico de evolucion de stock.
+    # 2.c) Grafico de evolucion de stock.
     story.append(Paragraph(
         "Figura 3. <i>Evolucion del nivel de stock (zona roja = faltante de alimento).</i>",
         st_body))
@@ -276,13 +329,67 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     story.append(Image(png_stock, width=16.0 * cm, height=16.0 * cm * 4.0 / 7.2))
 
     # =====================================================================
+    # SECCION 3 - ACEPTACION SENSORIAL DEL PRODUCTO (MONTE CARLO)
+    # =====================================================================
+    if agg_sensorial is not None:
+        story.append(PageBreak())
+        story.append(Paragraph(
+            "Seccion 3. Aceptacion sensorial del producto (simulacion Monte Carlo)",
+            st_h2))
+        story.append(Paragraph(
+            "Se estimo por el metodo de Monte Carlo la aceptacion de la tartaleta vegetal "
+            f"a partir de {SENS_N_COMENSALES} jueces que puntuan {N_PREGUNTAS} preguntas "
+            "(escala hedonica de 1 a 9) agrupadas en cuatro descriptores sensoriales. La "
+            "calidad de preparacion en cocina gobierna las medias de las distribuciones de "
+            "puntaje, y un efecto aleatorio por comensal modela la exigencia individual de "
+            "cada juez. Un comensal acepta el producto si su puntaje promedio es mayor o "
+            f"igual a {UMBRAL_ACEPTACION}.", st_body))
+        story.append(Spacer(1, 0.3 * cm))
+
+        story.append(Paragraph(
+            "Tabla 4. <i>Aceptacion sensorial y puntaje por descriptor (promedio e IC 95%).</i>",
+            st_body))
+        datos_sens = [["Indicador", "Promedio [IC 95%]"],
+                      ["Calidad de preparacion en cocina (1-10)",
+                       f"{agg_sensorial.config.calidad_cocina}"],
+                      ["Tasa de Aceptacion Global (%)",
+                       _ic_txt(agg_sensorial, "tasa_aceptacion")],
+                      ["Puntaje global medio (1-9)",
+                       _ic_txt(agg_sensorial, "puntaje_global", 2)]]
+        for d in DESCRIPTORES:
+            datos_sens.append([f"Descriptor {d} (1-9)", _ic_txt(agg_sensorial, f"desc_{d}", 2)])
+        tabla_sens = Table(datos_sens, colWidths=[9.5 * cm, 6.5 * cm])
+        tabla_sens.setStyle(_estilo_tabla(colors))
+        story.append(tabla_sens)
+        story.append(Spacer(1, 0.15 * cm))
+        story.append(Paragraph(
+            f"<i>Nota.</i> Intervalos de Confianza del 95% por "
+            f"{agg_sensorial.etiqueta_metodo_ic} sobre {agg_sensorial.n_iteraciones} "
+            "iteraciones Monte Carlo.", st_diag))
+        story.append(Spacer(1, 0.35 * cm))
+
+        story.append(Paragraph(
+            "Figura 4. <i>Puntaje medio por descriptor sensorial (umbral de aceptacion = 6).</i>",
+            st_body))
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Image(png_desc, width=16.0 * cm, height=16.0 * cm * 3.2 / 7.2))
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(Paragraph(
+            "Figura 5. <i>Analisis de sensibilidad: aceptacion global vs calidad del Sabor.</i>",
+            st_body))
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Image(png_sens, width=16.0 * cm, height=16.0 * cm * 3.2 / 7.2))
+
+    # =====================================================================
     # BLOQUE DE DIAGNOSTICOS Y RECOMENDACIONES
     # =====================================================================
     story.append(PageBreak())
     story.append(Paragraph(
-        "Diagnosticos y recomendaciones de Ingenieria de Software", st_h2))
+        "Diagnosticos y recomendaciones (ingenieria y salud)", st_h2))
     texto_diag = (diagnostico_servidor(agg_server, cfg_server) + "\n\n" +
                   diagnostico_produccion(agg_prod))
+    if agg_sensorial is not None:
+        texto_diag += "\n\n" + diagnostico_sensorial(agg_sensorial)
     for parrafo in texto_diag.split("\n"):
         texto = parrafo if parrafo.strip() else "&nbsp;"
         texto = texto.replace("  - ", "&bull;&nbsp;")
