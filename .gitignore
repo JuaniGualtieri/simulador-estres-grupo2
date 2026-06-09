@@ -36,3 +36,6 @@ _*.log
 *.docx
 *.doc
 instrucciones_simulador*.txt
+
+# Capturas de la nueva encuesta
+*.png
