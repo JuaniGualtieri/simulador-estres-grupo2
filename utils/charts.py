@@ -1,339 +1,349 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
- utils/charts.py  ::  PRIMITIVAS DE VISUALIZACION CIENTIFICA (matplotlib)
+ utils/charts.py  ::  VISUALIZACION INTERACTIVA (Plotly)
  Trabajo Practico Integrador Intercatedra - Grupo 2
 ================================================================================
 
-Aisla el dibujo de los graficos para que NO se duplique entre la vista web
-(Streamlit -> st.pyplot) y el reporte PDF (reportlab -> PNG embebido). Cada funcion
-recibe un `ax` de matplotlib y los datos crudos ya calculados por los modulos `sim/`,
-respetando la paleta verde/naranja agroecologica acordada.
+Aisla la construccion de los graficos para que NO se duplique entre la vista web
+(Streamlit -> st.plotly_chart) y el reporte PDF (reportlab -> PNG embebido via
+fig.to_image / kaleido). Cada funcion `figura_*` recibe los datos crudos ya
+calculados por los modulos `sim/` y devuelve una figura de Plotly (go.Figure)
+100% interactiva: zoom, paneo, hover con el valor exacto del KPI y leyendas en
+las que se puede ocultar/mostrar cada curva con un clic.
+
+REGLA DE SEGURIDAD: aqui solo cambia el MOTOR DE RENDERIZADO (de estatico a
+interactivo). Los arrays/dataframes de entrada provenientes de los motores SimPy y
+del Monte Carlo se consumen tal cual, sin alterarlos.
 """
 
 from __future__ import annotations
 
-from typing import List
-
-import matplotlib
-matplotlib.use("Agg")  # Backend sin ventana: valido para web y para PDF.
-from matplotlib.figure import Figure
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from sim.server_sim import POOLER_CAPACITY, AggregatedResult
 from sim.production_sim import ProductionAggregated
 from sim.sensorial_sim import (ATRIBUTOS_BOOL, ATRIBUTOS_SLIDER, ESCALA_MAX,
                                ETIQUETAS, UMBRAL_ACEPTACION, SensorialAggregated)
 
-# ---- Paleta premium interdisciplinaria (verde agroecologico + ambar) ----
-VERDE = "#2E7D32"
-VERDE_CLARO = "#9DB089"
-ROJO = "#C0392B"
-AMBAR = "#B9770E"
-NARANJA = "#E67E22"
-TXT_TITULO = "#23311C"
-TXT_EJE = "#3A4A30"
-TXT_TICK = "#5B6A4C"
-GRILLA = "#9DB089"
-BORDE_EJE = "#C4CFB6"
+# ---- Paleta sincronizada con el sistema de disenio (views/theme.py) ----
+VERDE = "#5B8A72"          # Salvia principal.
+VERDE_CLARO = "#A8C3B4"    # Salvia claro (segunda serie).
+SLATE = "#48637A"          # Azul slate (acento secundario).
+ROJO = "#C25B52"           # Coral apagado (criticos / limites).
+AMBAR = "#B0813F"          # Ambar apagado (umbrales).
+NARANJA = "#C8895C"        # Terracota suave (sensibilidad / femenino).
+TXT_TITULO = "#212529"     # Grafito (titulos).
+TXT_TICK = "#6C757D"       # Gris medio (ejes y ticks).
+GRILLA = "#EEF1F3"         # Grilla tenue.
+BORDE = "#E9ECEF"          # Borde de ejes.
+
+# Tintes translucidos para las areas bajo curva.
+FILL_VERDE = "rgba(91,138,114,0.14)"
+FILL_NARANJA = "rgba(200,137,92,0.13)"
+FILL_ROJO = "rgba(194,91,82,0.14)"
 
 
-def _estilizar_ejes(ax, titulo: str, xlabel: str, ylabel: str) -> None:
-    """Aplica el estilo premium comun (sin marcos superior/derecho, grilla tenue)."""
-    ax.set_title(titulo, fontsize=11, fontweight="bold", color=TXT_TITULO, pad=10)
-    ax.set_xlabel(xlabel, fontsize=10, color=TXT_EJE)
-    ax.set_ylabel(ylabel, fontsize=10, color=TXT_EJE)
-    ax.grid(True, alpha=0.25, linewidth=0.8, color=GRILLA)
-    for lado in ("top", "right"):
-        ax.spines[lado].set_visible(False)
-    for lado in ("left", "bottom"):
-        ax.spines[lado].set_color(BORDE_EJE)
-    ax.tick_params(colors=TXT_TICK, labelsize=8)
+# ===========================================================================
+# LAYOUT COMUN (look & feel premium, template plotly_white)
+# ===========================================================================
+def _layout(fig: go.Figure, titulo: str, xlabel: str = "", ylabel: str = "",
+            height: int = 380, leyenda: bool = True) -> go.Figure:
+    """Aplica el estilo limpio y minimalista comun a todas las figuras."""
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        title=dict(text=titulo, font=dict(size=15, color=TXT_TITULO), x=0.012,
+                   xanchor="left", y=0.96),
+        margin=dict(l=62, r=26, t=58, b=50),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color=TXT_TICK, size=12),
+        hoverlabel=dict(bgcolor="white", bordercolor=BORDE, font_size=12,
+                        font_color=TXT_TITULO),
+        showlegend=leyenda,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1.0,
+                    bgcolor="rgba(255,255,255,0.65)", bordercolor=BORDE, borderwidth=1,
+                    font=dict(size=11)),
+    )
+    fig.update_xaxes(title_text=xlabel, gridcolor=GRILLA, zeroline=False,
+                     showline=True, linecolor=BORDE, ticks="outside",
+                     tickcolor=BORDE, title_font=dict(color=TXT_TITULO, size=12))
+    fig.update_yaxes(title_text=ylabel, gridcolor=GRILLA, zeroline=False,
+                     showline=True, linecolor=BORDE, ticks="outside",
+                     tickcolor=BORDE, title_font=dict(color=TXT_TITULO, size=12))
+    return fig
 
 
 # ===========================================================================
 # PESTANIA 1 - GRAFICO A: curva temporal de conexiones ocupadas
 # ===========================================================================
-def dibujar_curva_conexiones(ax, agg: AggregatedResult) -> None:
-    """Curva de conexiones ocupadas en el tiempo (corrida representativa).
-
-    Linea verde suavizada con area sombreada, limite del pool en rojo y pico en ambar.
-    """
+def figura_conexiones(agg: AggregatedResult, height: int = 380) -> go.Figure:
+    """Curva escalonada de conexiones ocupadas en el tiempo (corrida representativa),
+    con el limite del pooler y el pico medio como referencias toggleables."""
     pool = agg.pool_capacity or POOLER_CAPACITY
-    ax.clear()
-    if agg.serie_t:
-        t_min = [t / 60.0 for t in agg.serie_t]  # segundos -> minutos.
-        ax.fill_between(t_min, agg.serie_conexiones, step="post",
-                        color=VERDE, alpha=0.16, zorder=1)
-        ax.step(t_min, agg.serie_conexiones, where="post", color=VERDE,
-                linewidth=2.0, solid_capstyle="round", solid_joinstyle="round",
-                label="Conexiones ocupadas", zorder=3)
+    fig = go.Figure()
+    t_min = [t / 60.0 for t in agg.serie_t] if agg.serie_t else []
+    if t_min:
+        fig.add_trace(go.Scatter(
+            x=t_min, y=agg.serie_conexiones, mode="lines",
+            line=dict(color=VERDE, width=2.4, shape="hv"),
+            fill="tozeroy", fillcolor=FILL_VERDE, name="Conexiones ocupadas",
+            hovertemplate="t = %{x:.1f} min<br>Conexiones = %{y}<extra></extra>"))
         pico = agg.media("pico_conexiones")
-        ax.axhline(pico, color=AMBAR, linestyle=":", linewidth=1.4,
-                   label=f"Pico ~{pico:.0f}", zorder=2)
-
-    ax.axhline(pool, color=ROJO, linestyle="--", linewidth=1.4,
-               label=f"Limite del pooler ({pool})", zorder=2)
-
-    tope = max(pool + 6, agg.media("pico_conexiones") + 6)
-    ax.set_ylim(0, tope)
-    ax.set_xlim(left=0)
-    _estilizar_ejes(ax, f"Conexiones ocupadas  -  Escenario {agg.escenario}",
-                    "Tiempo de la jornada (min)", "Conexiones concurrentes")
-    ax.legend(loc="upper right", fontsize=8, frameon=True, fancybox=True, framealpha=0.9)
+        xmax = max(t_min)
+        fig.add_trace(go.Scatter(
+            x=[0, xmax], y=[pico, pico], mode="lines",
+            line=dict(color=AMBAR, width=1.4, dash="dot"),
+            name=f"Pico ~{pico:.0f}",
+            hovertemplate=f"Pico de conexiones ~{pico:.0f}<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=[0, xmax], y=[pool, pool], mode="lines",
+            line=dict(color=ROJO, width=1.6, dash="dash"),
+            name=f"Límite del pooler ({pool})",
+            hovertemplate=f"Límite del pooler = {pool}<extra></extra>"))
+        tope = max(pool + 6, agg.media("pico_conexiones") + 6)
+        fig.update_yaxes(range=[0, tope])
+        fig.update_xaxes(rangemode="tozero")
+    _layout(fig, f"Conexiones ocupadas · Escenario {agg.escenario}",
+            "Tiempo de la jornada (min)", "Conexiones concurrentes", height)
+    return fig
 
 
 # ===========================================================================
 # PESTANIA 1 - GRAFICO B: boxplot de "Encuestas Perdidas" sobre N replicas
 # ===========================================================================
-def dibujar_boxplot_perdidas(ax, agg: AggregatedResult) -> None:
-    """Boxplot (caja y bigotes) del KPI 'Encuestas Perdidas' a lo largo de N replicas.
-
-    Visualiza la dispersion del azar y los percentiles. Superpone los puntos crudos
-    (stripplot con jitter) para que se vea cada replica.
-    """
-    import numpy as np
-    muestras: List[float] = agg.muestra("encuestas_perdidas")
-    ax.clear()
-
+def figura_boxplot(agg: AggregatedResult, height: int = 300) -> go.Figure:
+    """Boxplot horizontal del KPI 'Encuestas Perdidas' a lo largo de las N replicas,
+    con cada replica como punto (jitter) y la media + IC 95% destacados."""
+    muestras = list(agg.muestra("encuestas_perdidas"))
+    fig = go.Figure()
     if len(muestras) < 2:
-        ax.text(0.5, 0.5,
-                "El boxplot requiere 2 o mas replicas\npara mostrar la dispersion.",
-                ha="center", va="center", fontsize=10, color=TXT_TICK,
-                transform=ax.transAxes)
-        _estilizar_ejes(ax, "Distribucion de Encuestas Perdidas (N replicas)",
-                        "Encuestas perdidas", "")
-        ax.set_yticks([])
-        return
+        fig.add_annotation(
+            text="El boxplot requiere 2 o más réplicas<br>para mostrar la dispersión.",
+            showarrow=False, font=dict(color=TXT_TICK, size=13),
+            xref="paper", yref="paper", x=0.5, y=0.5)
+        _layout(fig, "Distribución de Encuestas Perdidas (N réplicas)",
+                "Encuestas perdidas", "", height, leyenda=False)
+        fig.update_yaxes(showticklabels=False)
+        return fig
 
-    caja = ax.boxplot(
-        muestras, vert=False, widths=0.55, patch_artist=True,
-        showmeans=True, meanline=True,
-        boxprops=dict(facecolor="#EAF3E2", edgecolor=VERDE, linewidth=1.6),
-        medianprops=dict(color=VERDE, linewidth=2.0),
-        meanprops=dict(color=NARANJA, linewidth=1.8, linestyle="--"),
-        whiskerprops=dict(color=VERDE, linewidth=1.4),
-        capprops=dict(color=VERDE, linewidth=1.4),
-        flierprops=dict(marker="o", markerfacecolor=ROJO, markersize=5, alpha=0.6,
-                        markeredgecolor="none"),
-    )
-
-    # Puntos crudos de cada replica con un leve jitter vertical.
-    rng = np.random.default_rng(7)
-    jitter = 1.0 + (rng.random(len(muestras)) - 0.5) * 0.35
-    ax.scatter(muestras, jitter, s=22, color=AMBAR, alpha=0.55, zorder=3,
-               edgecolors="white", linewidths=0.5, label="Replicas")
-
+    fig.add_trace(go.Box(
+        x=muestras, name="Encuestas perdidas", orientation="h",
+        boxmean=True, boxpoints="all", jitter=0.5, pointpos=0.0,
+        marker=dict(color=AMBAR, size=6, opacity=0.7),
+        line=dict(color=VERDE, width=1.8), fillcolor=FILL_VERDE,
+        hovertemplate="Encuestas perdidas = %{x:.0f}<extra></extra>"))
     media = agg.media("encuestas_perdidas")
     inf, sup = agg.ic("encuestas_perdidas")
-    ax.axvline(media, color=NARANJA, linestyle="--", linewidth=1.2,
-               label=f"Media {media:.1f}  IC95% [{inf:.1f}-{sup:.1f}]")
-
-    _estilizar_ejes(ax, "Distribucion de Encuestas Perdidas (N replicas)",
-                    "Encuestas perdidas", "")
-    ax.set_yticks([])
-    ax.legend(loc="upper right", fontsize=8, frameon=True, framealpha=0.9)
+    fig.add_vline(x=media, line=dict(color=NARANJA, width=1.6, dash="dash"),
+                  annotation_text=f"Media {media:.1f}  ·  IC95% [{inf:.1f}–{sup:.1f}]",
+                  annotation_position="top", annotation_font_color=TXT_TITULO)
+    _layout(fig, "Distribución de Encuestas Perdidas (N réplicas)",
+            "Encuestas perdidas", "", height, leyenda=False)
+    fig.update_yaxes(showticklabels=False)
+    return fig
 
 
 # ===========================================================================
-# PESTANIA 2 - GRAFICO: evolucion temporal del nivel de stock
+# PESTANIA 2 - GRAFICO: evolucion temporal del nivel de stock de despacho
 # ===========================================================================
-def dibujar_curva_stock(ax, agg: ProductionAggregated) -> None:
-    """Curva del nivel de stock disponible vs tiempo (min).
+def _zonas_agotado(t, stock):
+    """Une los tramos contiguos en que el stock vale 0 en intervalos (t0, t1)."""
+    zonas = []
+    i = 0
+    n = len(t)
+    while i < n - 1:
+        if stock[i] <= 0:
+            j = i
+            while j < n - 1 and stock[j] <= 0:
+                j += 1
+            zonas.append((t[i], t[j]))
+            i = j
+        else:
+            i += 1
+    return zonas
 
-    Pinta una zona sombreada ROJA en los tramos donde el stock cae a cero (faltante de
-    alimento -> comensales en la cola de espera).
-    """
-    ax.clear()
+
+def figura_stock(agg: ProductionAggregated, height: int = 380) -> go.Figure:
+    """Curva escalonada del nivel de stock de tartaletas enteras en el mostrador de
+    despacho vs tiempo (min), con zonas rojas donde el stock cae a cero (faltante)."""
     t = list(agg.serie_t)
     stock = list(agg.serie_stock)
-
+    fig = go.Figure()
     if t and stock:
-        ax.fill_between(t, stock, step="post", color=VERDE, alpha=0.16, zorder=1)
-        ax.step(t, stock, where="post", color=VERDE, linewidth=2.0,
-                solid_capstyle="round", solid_joinstyle="round",
-                label="Nivel de stock", zorder=3)
-
-        # Zona roja: tramos [t[i], t[i+1]] en los que el stock vale 0 (faltante).
-        primera_zona = True
-        for i in range(len(t) - 1):
-            if stock[i] <= 0:
-                ax.axvspan(t[i], t[i + 1], color=ROJO, alpha=0.16, zorder=0,
-                           label="Stock agotado" if primera_zona else None)
-                primera_zona = False
-
-    ax.axhline(0, color=ROJO, linestyle="--", linewidth=1.0, alpha=0.7, zorder=2)
-    tope = max(stock + [1]) + 2
-    ax.set_ylim(0, tope)
-    ax.set_xlim(left=0)
-    _estilizar_ejes(ax, "Evolucion del stock de tartaletas en el mostrador",
-                    "Tiempo de simulacion (min)", "Tartaletas disponibles")
-    ax.legend(loc="upper right", fontsize=8, frameon=True, framealpha=0.9)
+        fig.add_trace(go.Scatter(
+            x=t, y=stock, mode="lines",
+            line=dict(color=VERDE, width=2.4, shape="hv"),
+            fill="tozeroy", fillcolor=FILL_VERDE, name="Nivel de stock",
+            hovertemplate="t = %{x:.1f} min<br>Stock = %{y} tartaletas<extra></extra>"))
+        zonas = _zonas_agotado(t, stock)
+        for (x0, x1) in zonas:
+            fig.add_vrect(x0=x0, x1=x1, fillcolor=FILL_ROJO, line_width=0, layer="below")
+        if zonas:
+            # Entrada de leyenda (toggleable) para las zonas de faltante.
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(size=11, color="rgba(194,91,82,0.45)", symbol="square"),
+                name="Stock agotado", hoverinfo="skip"))
+        tope = max(stock + [1]) + 2
+        fig.update_yaxes(range=[0, tope])
+        fig.update_xaxes(rangemode="tozero")
+    _layout(fig, "Evolución del stock de tartaletas en el mostrador de despacho",
+            "Tiempo de simulación (min)", "Tartaletas enteras disponibles", height)
+    return fig
 
 
 # ===========================================================================
-# PESTANIA 3 - GRAFICO A: perfil de los 8 atributos numericos (barras)
+# PESTANIA 3 - GRAFICO A: perfil sensorial (RADAR / POLAR de los 8 atributos)
 # ===========================================================================
-def dibujar_perfil_atributos(ax, agg: SensorialAggregated) -> None:
-    """Barras horizontales del puntaje medio (1-10) de los 8 atributos de la encuesta.
-
-    Marca el umbral de aceptacion (>= 6) con una linea ambar; las barras que lo superan
-    se pintan verdes y las que no, ambar, con su IC 95% como barra de error.
-    """
-    ax.clear()
+def figura_perfil(agg: SensorialAggregated, height: int = 440) -> go.Figure:
+    """Radar (grafico polar) del puntaje medio (1-10) de los 8 atributos numericos,
+    con el anillo del umbral de aceptacion y el IC 95% de cada atributo en el hover."""
     atributos = list(ATRIBUTOS_SLIDER)
-    nombres = [ETIQUETAS[a] for a in atributos]
+    nombres = [ETIQUETAS[a].split(" (")[0] for a in atributos]   # Etiqueta corta para el radar.
     medias = [agg.media(a) for a in atributos]
-    errores = [max(0.0, agg.media(a) - agg.ic(a)[0]) for a in atributos]
-    colores = [VERDE if m >= UMBRAL_ACEPTACION else AMBAR for m in medias]
+    # Cerramos el poligono repitiendo el primer punto.
+    theta = nombres + [nombres[0]]
+    r = medias + [medias[0]]
+    ic_low = [agg.ic(a)[0] for a in atributos]
+    ic_high = [agg.ic(a)[1] for a in atributos]
+    customdata = list(zip(ic_low + [ic_low[0]], ic_high + [ic_high[0]]))
 
-    y = list(range(len(atributos)))
-    ax.barh(y, medias, color=colores, alpha=0.85, height=0.62, zorder=3,
-            xerr=errores if agg.ic_disponible else None,
-            error_kw=dict(ecolor=TXT_TICK, capsize=4, elinewidth=1.0))
-    for yi, m in zip(y, medias):
-        ax.text(m + 0.12, yi, f"{m:.2f}", va="center", fontsize=8.5, color=TXT_TITULO)
-
-    ax.axvline(UMBRAL_ACEPTACION, color=NARANJA, linestyle="--", linewidth=1.4,
-               label=f"Umbral de aceptacion ({UMBRAL_ACEPTACION})", zorder=2)
-    ax.set_yticks(y)
-    ax.set_yticklabels(nombres)
-    ax.set_xlim(0, ESCALA_MAX + 0.8)
-    ax.invert_yaxis()
-    _estilizar_ejes(ax, "Perfil sensorial: puntaje medio por atributo (escala 1-10)",
-                    "Puntaje medio", "")
-    ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9)
+    fig = go.Figure()
+    # Anillo del umbral de aceptacion.
+    fig.add_trace(go.Scatterpolar(
+        r=[UMBRAL_ACEPTACION] * len(theta), theta=theta, mode="lines",
+        line=dict(color=AMBAR, width=1.5, dash="dash"),
+        name=f"Umbral de aceptación ({UMBRAL_ACEPTACION})", hoverinfo="skip"))
+    # Poligono del perfil sensorial.
+    if agg.ic_disponible:
+        hovert = ("<b>%{theta}</b><br>Puntaje medio = %{r:.2f}/10<br>"
+                  "IC95% [%{customdata[0]:.2f} – %{customdata[1]:.2f}]<extra></extra>")
+    else:
+        hovert = "<b>%{theta}</b><br>Puntaje medio = %{r:.2f}/10<extra></extra>"
+    fig.add_trace(go.Scatterpolar(
+        r=r, theta=theta, mode="lines+markers", fill="toself",
+        fillcolor="rgba(91,138,114,0.22)", line=dict(color=VERDE, width=2.6),
+        marker=dict(size=7, color=VERDE), name="Puntaje medio",
+        customdata=customdata, hovertemplate=hovert))
+    fig.update_layout(
+        template="plotly_white", height=height, paper_bgcolor="white",
+        title=dict(text="Perfil sensorial: puntaje medio por atributo (escala 1-10)",
+                   font=dict(size=15, color=TXT_TITULO), x=0.012, xanchor="left", y=0.97),
+        margin=dict(l=70, r=70, t=70, b=50),
+        font=dict(color=TXT_TICK, size=12),
+        hoverlabel=dict(bgcolor="white", bordercolor=BORDE, font_color=TXT_TITULO),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.08, xanchor="center", x=0.5,
+                    font=dict(size=11)),
+        polar=dict(
+            bgcolor="white",
+            radialaxis=dict(range=[0, ESCALA_MAX], tickvals=[2, 4, 6, 8, 10],
+                            gridcolor=GRILLA, linecolor=BORDE, tickfont=dict(size=10)),
+            angularaxis=dict(gridcolor=GRILLA, linecolor=BORDE,
+                             tickfont=dict(size=10, color=TXT_TITULO))),
+    )
+    return fig
 
 
 # ===========================================================================
 # PESTANIA 3 - GRAFICO B: preguntas dicotomicas Si/No (barras 100% apiladas)
 # ===========================================================================
-def dibujar_si_no(ax, agg: SensorialAggregated) -> None:
-    """Barras horizontales 100% apiladas con el % de 'Si' / 'No' de las dos cualitativas."""
-    ax.clear()
+def figura_si_no(agg: SensorialAggregated, height: int = 280) -> go.Figure:
+    """Barras horizontales 100% apiladas con el % de 'Sí' / 'No' de las dos cualitativas
+    (matriz tipo JAR), construidas con Plotly Express."""
     atributos = list(ATRIBUTOS_BOOL)
     nombres = [ETIQUETAS[a] for a in atributos]
     pct_si = [agg.prop_si(a) for a in atributos]
     pct_no = [100.0 - p for p in pct_si]
 
-    y = list(range(len(atributos)))
-    ax.barh(y, pct_si, color=VERDE, alpha=0.9, height=0.55, zorder=3, label="Si")
-    ax.barh(y, pct_no, left=pct_si, color=VERDE_CLARO, alpha=0.7, height=0.55,
-            zorder=3, label="No")
-    for yi, ps in zip(y, pct_si):
-        if ps >= 8:
-            ax.text(ps / 2.0, yi, f"{ps:.0f}%", va="center", ha="center",
-                    fontsize=8.5, color="white", fontweight="bold")
-        if (100.0 - ps) >= 8:
-            ax.text(ps + (100.0 - ps) / 2.0, yi, f"{100.0 - ps:.0f}%", va="center",
-                    ha="center", fontsize=8.5, color=TXT_TITULO)
-
-    ax.set_yticks(y)
-    ax.set_yticklabels(nombres)
-    ax.set_xlim(0, 100)
-    ax.invert_yaxis()
-    _estilizar_ejes(ax, "Preguntas cualitativas (Si / No)", "Porcentaje de comensales (%)", "")
-    ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9, ncol=2)
+    fig = px.bar(
+        x=pct_si + pct_no,
+        y=nombres + nombres,
+        color=["Sí"] * len(nombres) + ["No"] * len(nombres),
+        orientation="h",
+        color_discrete_map={"Sí": VERDE, "No": VERDE_CLARO},
+        text=[f"{v:.0f}%" for v in (pct_si + pct_no)],
+    )
+    fig.update_traces(textposition="inside", insidetextanchor="middle",
+                      textfont=dict(color="white", size=12),
+                      hovertemplate="%{y}<br>%{fullData.name} = %{x:.1f}%<extra></extra>")
+    fig.update_layout(barmode="stack", legend_title_text="")
+    fig.update_xaxes(range=[0, 100], ticksuffix="%")
+    _layout(fig, "Preguntas cualitativas (Sí / No) — barras 100% apiladas",
+            "Porcentaje de comensales", "", height)
+    return fig
 
 
 # ===========================================================================
 # PESTANIA 3 - GRAFICO C: demografia del panel (edades + sexo)
 # ===========================================================================
-def dibujar_edades(ax, agg: SensorialAggregated) -> None:
-    """Histograma de la distribucion de edades del panel de comensales."""
-    ax.clear()
+def figura_demografia(agg: SensorialAggregated, height: int = 340) -> go.Figure:
+    """Histograma de edades + dona de distribucion por sexo del panel de comensales."""
     edades = [c.edad for c in agg.panel]
-    if edades:
-        bins = range(15, 75, 5)
-        ax.hist(edades, bins=bins, color=VERDE, alpha=0.85, edgecolor="white", zorder=3)
-    _estilizar_ejes(ax, "Distribucion de edades (panel)", "Edad (anios)", "Comensales")
-
-
-def dibujar_sexo(ax, agg: SensorialAggregated) -> None:
-    """Torta de la distribucion por sexo (genero auto-percibido) del panel."""
-    ax.clear()
     n_masc = sum(1 for c in agg.panel if c.sexo == "Masculino")
     n_fem = len(agg.panel) - n_masc
+
+    fig = make_subplots(
+        rows=1, cols=2, column_widths=[0.58, 0.42],
+        specs=[[{"type": "xy"}, {"type": "domain"}]],
+        subplot_titles=("Distribución de edades", "Distribución por sexo"))
+    if edades:
+        fig.add_trace(go.Histogram(
+            x=edades, xbins=dict(start=15, end=75, size=5),
+            marker=dict(color=VERDE, line=dict(color="white", width=1)),
+            name="Edades", showlegend=False,
+            hovertemplate="Edad %{x} años<br>%{y} comensales<extra></extra>"),
+            row=1, col=1)
     if agg.panel:
-        ax.pie([n_masc, n_fem], labels=["Masculino", "Femenino"],
-               colors=[VERDE, NARANJA], autopct="%1.0f%%", startangle=90,
-               textprops=dict(color=TXT_TITULO, fontsize=9),
-               wedgeprops=dict(edgecolor="white", linewidth=1.5))
-    ax.set_title("Distribucion por sexo (panel)", fontsize=11, fontweight="bold",
-                 color=TXT_TITULO, pad=10)
+        fig.add_trace(go.Pie(
+            labels=["Masculino", "Femenino"], values=[n_masc, n_fem],
+            marker=dict(colors=[SLATE, NARANJA], line=dict(color="white", width=2)),
+            hole=0.5, textinfo="percent", sort=False,
+            hovertemplate="%{label}<br>%{value} comensales (%{percent})<extra></extra>"),
+            row=1, col=2)
+    fig.update_layout(
+        template="plotly_white", height=height, paper_bgcolor="white",
+        plot_bgcolor="white", font=dict(color=TXT_TICK, size=12),
+        margin=dict(l=50, r=20, t=56, b=44),
+        hoverlabel=dict(bgcolor="white", bordercolor=BORDE, font_color=TXT_TITULO),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.12, xanchor="center", x=0.78,
+                    font=dict(size=11)),
+    )
+    fig.update_xaxes(title_text="Edad (años)", gridcolor=GRILLA, showline=True,
+                     linecolor=BORDE, row=1, col=1)
+    fig.update_yaxes(title_text="Comensales", gridcolor=GRILLA, showline=True,
+                     linecolor=BORDE, row=1, col=1)
+    return fig
 
 
 # ===========================================================================
 # PESTANIA 3 - GRAFICO D: analisis de sensibilidad del Sabor general
 # ===========================================================================
-def dibujar_sensibilidad_sabor(ax, agg: SensorialAggregated) -> None:
-    """Curva de aceptacion global (%) en funcion de la media del Sabor general (1-10)."""
-    ax.clear()
+def figura_sensibilidad(agg: SensorialAggregated, height: int = 360) -> go.Figure:
+    """Curva de aceptacion global (%) en funcion de la media objetivo del Sabor general."""
     x = list(agg.sens_sabor_medias)
     y = list(agg.sens_aceptacion)
+    fig = go.Figure()
     if x and y:
-        ax.fill_between(x, y, color=NARANJA, alpha=0.12, zorder=1)
-        ax.plot(x, y, color=NARANJA, linewidth=2.2, marker="o", markersize=5,
-                markerfacecolor="white", markeredgecolor=NARANJA, zorder=3,
-                label="Aceptacion global proyectada")
-        ax.axhline(80, color=VERDE, linestyle=":", linewidth=1.2, alpha=0.8,
-                   label="Meta comercial (80%)", zorder=2)
-        ax.axvline(UMBRAL_ACEPTACION, color=AMBAR, linestyle="--", linewidth=1.2,
-                   alpha=0.7, label=f"Umbral de aceptacion ({UMBRAL_ACEPTACION})", zorder=2)
-    ax.set_ylim(0, 105)
-    ax.set_xlim(min(x) if x else 1, max(x) if x else ESCALA_MAX)
-    _estilizar_ejes(ax, "Sensibilidad: aceptacion vs Sabor general",
-                    "Puntaje medio objetivo del Sabor general (1-10)", "Aceptacion global (%)")
-    ax.legend(loc="lower right", fontsize=8, frameon=True, framealpha=0.9)
-
-
-# ===========================================================================
-# FABRICAS DE FIGURAS (para PDF y para usos puntuales fuera de Streamlit)
-# ===========================================================================
-def figura_conexiones(agg: AggregatedResult, figsize=(7.2, 4.0), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_curva_conexiones(fig.add_subplot(111), agg)
-    fig.tight_layout()
-    return fig
-
-
-def figura_boxplot(agg: AggregatedResult, figsize=(7.2, 3.2), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_boxplot_perdidas(fig.add_subplot(111), agg)
-    fig.tight_layout()
-    return fig
-
-
-def figura_stock(agg: ProductionAggregated, figsize=(7.2, 4.0), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_curva_stock(fig.add_subplot(111), agg)
-    fig.tight_layout()
-    return fig
-
-
-def figura_perfil(agg: SensorialAggregated, figsize=(7.2, 3.6), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_perfil_atributos(fig.add_subplot(111), agg)
-    fig.tight_layout()
-    return fig
-
-
-def figura_si_no(agg: SensorialAggregated, figsize=(7.2, 2.4), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_si_no(fig.add_subplot(111), agg)
-    fig.tight_layout()
-    return fig
-
-
-def figura_demografia(agg: SensorialAggregated, figsize=(7.2, 3.0), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_edades(fig.add_subplot(121), agg)
-    dibujar_sexo(fig.add_subplot(122), agg)
-    fig.tight_layout()
-    return fig
-
-
-def figura_sensibilidad(agg: SensorialAggregated, figsize=(7.2, 3.2), dpi=150) -> Figure:
-    fig = Figure(figsize=figsize, dpi=dpi, facecolor="white")
-    dibujar_sensibilidad_sabor(fig.add_subplot(111), agg)
-    fig.tight_layout()
+        fig.add_trace(go.Scatter(
+            x=x, y=y, mode="lines+markers", fill="tozeroy", fillcolor=FILL_NARANJA,
+            line=dict(color=NARANJA, width=2.8),
+            marker=dict(size=8, color="white", line=dict(color=NARANJA, width=2)),
+            name="Aceptación global proyectada",
+            hovertemplate="Sabor objetivo = %{x:.0f}/10<br>"
+                          "Aceptación = %{y:.1f}%<extra></extra>"))
+        fig.add_hline(y=80, line=dict(color=VERDE, width=1.4, dash="dot"),
+                      annotation_text="Meta comercial (80%)",
+                      annotation_position="top left", annotation_font_color=VERDE)
+        fig.add_vline(x=UMBRAL_ACEPTACION, line=dict(color=AMBAR, width=1.4, dash="dash"),
+                      annotation_text=f"Umbral ({UMBRAL_ACEPTACION})",
+                      annotation_position="bottom right", annotation_font_color=AMBAR)
+        fig.update_yaxes(range=[0, 105], ticksuffix="%")
+        fig.update_xaxes(range=[min(x) - 0.3, max(x) + 0.3])
+    _layout(fig, "Sensibilidad: aceptación global vs Sabor general",
+            "Puntaje medio objetivo del Sabor general (1-10)", "Aceptación global", height,
+            leyenda=False)
     return fig

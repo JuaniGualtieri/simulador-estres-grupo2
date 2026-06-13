@@ -15,31 +15,44 @@ determinar la viabilidad organizacional y los cuellos de botella de stock.
 
 DEFINICION TEORICA
 ------------------
-* ENTIDADES ........... Lotes de tartaletas alimenticias (cada lote = 1 bandeja).
+* ENTIDADES ........... Tandas de horneado (cada tanda = lote FIJO de 8 tartaletas
+                        ENTERAS) que recorren la cadena de produccion.
 * RECURSOS ............ Operarios de cocina disponibles (simpy.Resource) y Capacidad
-                        fisica del Horno = bandejas maximas concurrentes (simpy.Resource).
-* VARIABLES DE ESTADO   Stock actual de tartaletas en el mostrador (simpy.Container),
-                        estado del horno (ranuras ocupadas) y comensales en cola de
-                        espera por alimento.
+                        fisica del Horno = tandas maximas concurrentes (simpy.Resource).
+* VARIABLES DE ESTADO   Stock actual de tartaletas enteras en el mostrador de despacho
+                        (simpy.Container), estado del horno (ranuras ocupadas) y
+                        comensales en la fila de despacho (espera por alimento).
 
-FLUJO DEL PROCESO OPERATIVO (LOGICA SimPy)
-------------------------------------------
-* Etapa 1 (Masa y Relleno) ... NORMAL(media 15 min, desvio 2 min) por lote. Requiere
-                               un operario durante toda la etapa.
-* Etapa 2 (Horneado) ......... Requiere una ranura libre del recurso Horno. Tiempo de
-                               coccion FIJO = 20 min. NO requiere operario continuo.
-* Etapa 3 (Ensamblado/Empaque) UNIFORME[3 - 5] min por lote. Requiere un operario.
-Cada lote terminado incorpora TARTALETAS_POR_LOTE unidades al stock del mostrador.
+FLUJO DEL PROCESO OPERATIVO (LOGICA SimPy) - MODELO MULTI-ETAPA DEL CASO REAL
+-----------------------------------------------------------------------------
+Cada TANDA de 8 tartaletas enteras recorre tres etapas de tiempos FIJOS medidos en la
+Planta Piloto (sin variabilidad: son tiempos de receta controlados por el operario):
+* Etapa 1 (Coccion del Relleno) ... 30 min FIJOS. Requiere un operario que cocina el
+                                    relleno (pollo, alubia y vegetales) en la hornalla.
+* Etapa 2 (Horneado de la Masa) ... 15 min FIJOS. Requiere una ranura libre del Horno.
+* Etapa 3 (Armado y Gratinado) .... 10 min FIJOS. Requiere el Horno (gratinadora). El
+                                    ARMADO de la tartaleta esta SOLAPADO dentro de estos
+                                    10 min de gratinado final del queso, no se modela
+                                    como un tiempo aparte.
+Cada tanda terminada incorpora 8 tartaletas ENTERAS al mostrador. Para cubrir la
+demanda entera de 64 comensales se encolan ceil(64 / 8) = 8 tandas de horneado.
+
+REGLA DE DESPACHO ENTERO
+------------------------
+Cada comensal consume estrictamente UNA (1) tartaleta ENTERA. No existe fraccionamiento
+en mitades ni cuartos: la demanda total es de 64 tartaletas completas para los 64
+comensales (1 a 1).
 
 ACOPLAMIENTO DINAMICO INTERCATEDRA (CONSUMO DE STOCK)
 -----------------------------------------------------
 La llegada de los comensales usa la MISMA distribucion EXPONENCIAL de arribos de la
-Pestania 1. Al llegar, cada comensal intenta retirar una tartaleta lista del stock:
+Pestania 1 (media 1,32 min entre llegadas). Al llegar, cada comensal intenta retirar
+una tartaleta ENTERA lista del mostrador de despacho:
   - Si hay stock disponible, el stock disminuye en 1 y el comensal pasa a responder la
     encuesta web (sale del sistema de cocina).
-  - Si el stock es 0, el comensal entra a una "Cola de Espera por Alimento" (modelada
-    con el bloqueo nativo de simpy.Container.get) reteniendo su tiempo hasta que un
-    lote finalice la Etapa 3 y reponga el mostrador.
+  - Si el stock es 0, el comensal entra a la "Fila de Despacho" (modelada con el bloqueo
+    nativo de simpy.Container.get) reteniendo su tiempo hasta que una tanda finalice la
+    Etapa 3 y reponga el mostrador.
 ================================================================================
 """
 
@@ -58,17 +71,22 @@ from sim.estadistica import cuantil_ic95, intervalo_confianza_95
 # ---------------------------------------------------------------------------
 # PARAMETROS DEL MODELO DE PRODUCCION (tiempos en MINUTOS)
 # ---------------------------------------------------------------------------
-N_COMENSALES = 50              # Comensales del evento (consumo de tartaletas).
-VENTANA_ARRIBOS_MIN = 90.0    # Jornada de degustacion en la que arriban los comensales.
-TARTALETAS_POR_LOTE = 6       # Unidades que rinde cada lote/bandeja al terminar.
-STOCK_INICIAL_LOTES = 4       # Bandejas pre-cocidas listas en el mostrador al abrir.
-LOTES_BUFFER = 1              # Lote extra de seguridad sobre la demanda estimada.
+# Acoplamiento con el Caso Real (Pestania 1): 64 comensales reales que arriban segun
+# una EXPONENCIAL de media 1,32 min (79,3 s). Como tasa_arribo_media = ventana / n,
+# fijamos la ventana en 1,32 min x 64 para reproducir esa media exacta entre llegadas.
+N_COMENSALES = 64              # Comensales reales del stand (cada uno consume 1 tartaleta ENTERA).
+MEDIA_ARRIBO_MIN = 79.3 / 60.0  # 1,32 min: media de la Exponencial de arribos del Caso Real.
+VENTANA_ARRIBOS_MIN = MEDIA_ARRIBO_MIN * N_COMENSALES  # Para que E(X) = ventana/n = 1,32 min.
+DEMANDA_TARTALETAS = N_COMENSALES   # Regla de despacho ENTERO: 64 tartaletas completas para 64 comensales.
 
-MASA_MEDIA = 15.0             # Etapa 1: media de la NORMAL (min).
-MASA_DESVIO = 2.0            # Etapa 1: desvio de la NORMAL (min).
-HORNEADO_FIJO = 20.0         # Etapa 2: coccion FIJA (min).
-ENSAMBLE_MIN = 3.0           # Etapa 3: minimo de la UNIFORME (min).
-ENSAMBLE_MAX = 5.0           # Etapa 3: maximo de la UNIFORME (min).
+# --- Lote/tanda FIJO de produccion y tiempos FIJOS de las tres etapas (medidos en planta) ---
+TARTALETAS_POR_LOTE = 8        # Tanda FIJA de 8 tartaletas ENTERAS por ciclo de horneado.
+TIEMPO_RELLENO = 30.0          # Etapa 1: Coccion del Relleno = 30 min FIJOS (requiere operario).
+TIEMPO_HORNEADO_MASA = 15.0    # Etapa 2: Horneado de la Masa = 15 min FIJOS (requiere horno).
+TIEMPO_GRATINADO = 10.0        # Etapa 3: Armado y Gratinado del Queso = 10 min FIJOS (armado solapado dentro).
+TIEMPO_CICLO_LOTE = (TIEMPO_RELLENO + TIEMPO_HORNEADO_MASA
+                     + TIEMPO_GRATINADO)  # 55 min: camino critico de UNA tanda sin contienda de recursos.
+STOCK_INICIAL_LOTES = 0        # Sin pre-coccion: las 64 tartaletas salen integras de la jornada.
 
 SEED_BASE = 2026             # Semilla base (anio del evento) para reproducibilidad.
 N_REPLICAS_DEFAULT = 20      # Replicas para estabilizar los KPIs escalares.
@@ -79,7 +97,7 @@ N_REPLICAS_DEFAULT = 20      # Replicas para estabilizar los KPIs escalares.
 # Modelan la pregunta de Nutricion de la Parte 2 del TPI: "si el producto se
 # comercializara, cuanto se gana por jornada y en cuantas jornadas se recupera la
 # inversion inicial". Son valores POR DEFECTO, totalmente parametrizables por la UI.
-COSTO_MP_LOTE = 7200.0          # Costo de materia prima por lote de 6 unidades (~$1.200 c/u).
+COSTO_MP_LOTE = 7200.0          # Costo de materia prima por tanda de 8 unidades (~$900 c/u).
 PRECIO_VENTA_UNIDAD = 3000.0    # Precio de venta sugerido por tartaleta al publico.
 COSTO_OPERARIO_JORNADA = 15000.0  # Costo fijo por operario por jornada de produccion.
 INVERSION_INICIAL = 500000.0    # Inversion inicial en equipamiento de cocina (horno, mesada, utensilios).
@@ -248,26 +266,33 @@ class StockMonitor:
 def proceso_lote(env: simpy.Environment, monitor: StockMonitor,
                  operarios: simpy.Resource, horno: simpy.Resource,
                  cfg: ProductionConfig, rng: np.random.Generator):
-    """Ciclo de fabricacion de UN lote a traves de las tres etapas de cocina."""
+    """Ciclo de fabricacion de UNA tanda de 8 tartaletas por las tres etapas FIJAS.
+
+    Los tres tiempos son DETERMINISTAS (tiempos de receta controlados): no se muestrea
+    ninguna distribucion, por eso `rng` no se usa aqui. Lo que introduce dinamica y
+    diferencias entre corridas es la CONTIENDA por los recursos (operarios y horno)
+    entre las 8 tandas que se lanzan en paralelo al inicio de la jornada.
+    """
     resultado = monitor.resultado
     t_inicio = env.now
 
-    # Etapa 1 (Masa y Relleno): requiere un operario -> NORMAL(15, 2) min.
+    # Etapa 1 (Coccion del Relleno): requiere un operario -> 30 min FIJOS.
     with operarios.request() as op:
         yield op
-        yield env.timeout(max(0.1, rng.normal(MASA_MEDIA, MASA_DESVIO)))
+        yield env.timeout(TIEMPO_RELLENO)
 
-    # Etapa 2 (Horneado): requiere una ranura del horno -> coccion FIJA de 20 min.
+    # Etapa 2 (Horneado de la Masa): requiere una ranura del horno -> 15 min FIJOS.
     with horno.request() as ranura:
         yield ranura
-        yield env.timeout(HORNEADO_FIJO)
+        yield env.timeout(TIEMPO_HORNEADO_MASA)
 
-    # Etapa 3 (Ensamblado y Empaque): requiere un operario -> UNIFORME[3, 5] min.
-    with operarios.request() as op:
-        yield op
-        yield env.timeout(rng.uniform(ENSAMBLE_MIN, ENSAMBLE_MAX))
+    # Etapa 3 (Armado y Gratinado del Queso): requiere el horno/gratinadora -> 10 min
+    # FIJOS. El ARMADO de la tartaleta esta SOLAPADO dentro de estos 10 min de gratinado.
+    with horno.request() as ranura:
+        yield ranura
+        yield env.timeout(TIEMPO_GRATINADO)
 
-    # Lote terminado: se reponen TARTALETAS_POR_LOTE unidades al mostrador.
+    # Tanda terminada: se reponen 8 tartaletas ENTERAS al mostrador de despacho.
     yield from monitor.reponer(TARTALETAS_POR_LOTE)
     resultado.tartaletas_producidas += TARTALETAS_POR_LOTE
     resultado.lotes_producidos += 1
@@ -275,14 +300,17 @@ def proceso_lote(env: simpy.Environment, monitor: StockMonitor,
 
 
 def lotes_objetivo(cfg: ProductionConfig, stock_inicial: int) -> int:
-    """Cantidad de lotes a producir para cubrir la demanda (mas un buffer de seguridad).
+    """Cantidad de TANDAS de horneado de 8 unidades para satisfacer la demanda ENTERA.
 
-    Equivale a las ordenes de trabajo que la cocina encola al inicio de la jornada; los
-    recursos (operarios y horno) las procesan EN PARALELO segun su capacidad, por lo que
-    mas operarios u horno mas grande aceleran realmente la reposicion del stock.
+    Por la regla de despacho entero, cada uno de los cfg.n_comensales consume 1 tartaleta
+    ENTERA, asi que la demanda total es cfg.n_comensales unidades. Las tandas necesarias
+    son el techo de (demanda - stock pre-cocido) / 8; con 64 comensales y sin pre-coccion
+    da ceil(64 / 8) = 8 tandas exactas. Estas ordenes de trabajo se encolan al inicio de
+    la jornada y los recursos (operarios y horno) las procesan EN PARALELO segun su
+    capacidad, por lo que mas operarios u horno mas grande aceleran la reposicion.
     """
     faltante = max(0, cfg.n_comensales - stock_inicial)
-    return math.ceil(faltante / TARTALETAS_POR_LOTE) + LOTES_BUFFER
+    return math.ceil(faltante / TARTALETAS_POR_LOTE)
 
 
 def lanzar_produccion(env: simpy.Environment, monitor: StockMonitor,
@@ -350,9 +378,9 @@ def correr_replica(cfg: ProductionConfig, semilla: int) -> ProductionReplicaResu
 def _finanzas_replica(r: ProductionReplicaResult, cfg: ProductionConfig) -> Dict[str, float]:
     """Indicadores economicos (ARS) de UNA jornada simulada (escenario de venta).
 
-    Las tartaletas vendidas son las efectivamente retiradas por los comensales; los
-    lotes pre-cocidos del stock inicial tambien consumieron materia prima, por lo que
-    se incluyen en el costo variable.
+    Las tartaletas vendidas son las efectivamente retiradas por los comensales. El costo
+    variable se calcula sobre las tandas realmente horneadas (mas el stock pre-cocido si
+    lo hubiera), ya que cada tanda de 8 unidades consume una porcion de materia prima.
     """
     unidades_vendidas = float(r.servidos)
     ingresos = unidades_vendidas * cfg.precio_venta_unidad

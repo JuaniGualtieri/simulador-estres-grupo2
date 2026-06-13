@@ -1,9 +1,9 @@
-# Tema premium de la suite (paleta verde agroecologica + acento naranja).
+# Tema premium de la suite (paleta moderna: verde salvia + azul slate + neutros grises).
 [theme]
-primaryColor = "#2E7D32"
-backgroundColor = "#F7FAF4"
-secondaryBackgroundColor = "#EDF1E9"
-textColor = "#23311C"
+primaryColor = "#5B8A72"
+backgroundColor = "#F8F9FA"
+secondaryBackgroundColor = "#F1F3F5"
+textColor = "#212529"
 font = "sans serif"
 
 [server]

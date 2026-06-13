@@ -5,10 +5,10 @@
  Trabajo Practico Integrador Intercatedra - Grupo 2
 ================================================================================
 
-Interfaz Streamlit de la cadena de produccion de tartaletas: sliders de operarios y
-capacidad del horno, tarjetas de KPI de stock y el grafico de evolucion del nivel de
-stock (con zona roja de faltante). NO contiene matematica: delega en
-sim/production_sim.py (motor) y utils/charts.py (visualizacion).
+Interfaz Streamlit de la cadena de produccion multi-etapa de tartaletas: sliders de
+operarios y capacidad del horno, tarjetas de KPI de stock/finanzas y el grafico
+interactivo de evolucion del nivel de stock (con zona roja de faltante). NO contiene
+matematica: delega en sim/production_sim.py (motor) y utils/charts.py (visualizacion).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import streamlit as st
 from sim import production_sim as prod
 from sim.estadistica import validar_generador_arribos
 from utils import charts
-from views.theme import PALETA, bloque_validacion, tarjeta_kpi
+from views.theme import PALETA, bloque_validacion, sub_seccion, tarjeta_kpi
 
 # Claves de session_state usadas por esta pestania (persistencia multivariable, req. 7).
 K_OPERARIOS = "prod_operarios"
@@ -43,42 +43,46 @@ def _inicializar_estado() -> None:
 
 def _panel_control() -> bool:
     """Panel lateral de configuracion de la cadena de produccion."""
-    st.markdown("#### 1 · Recursos de cocina")
+    sub_seccion("1 · Recursos de cocina")
     st.slider("Cantidad de operarios", min_value=1, max_value=5, step=1, key=K_OPERARIOS,
-              help="Operarios para la Etapa 1 (masa/relleno) y la Etapa 3 (ensamblado).")
-    st.slider("Capacidad del horno (lotes simultaneos)", min_value=1, max_value=4, step=1,
-              key=K_HORNO, help="Ranuras/bandejas que el horno puede cocinar en paralelo.")
+              help="Operarios para la Etapa 1 (cocción del relleno, 30 min).")
+    st.slider("Capacidad del horno (tandas simultáneas)", min_value=1, max_value=4, step=1,
+              key=K_HORNO, help="Ranuras del horno para la Etapa 2 (horneado) y la "
+                                "Etapa 3 (gratinado) en paralelo.")
 
-    st.markdown("#### 2 · Parametros economicos (escenario de venta)")
-    st.caption("Modela el emprendimiento: rentabilidad por jornada y recupero de inversion.")
-    st.number_input("Costo materia prima por lote ($)", min_value=0.0, step=500.0,
+    sub_seccion("2 · Parámetros económicos (escenario de venta)")
+    st.caption("Modela el emprendimiento: rentabilidad por jornada y recupero de inversión.")
+    st.number_input("Costo materia prima por tanda ($)", min_value=0.0, step=500.0,
                     key=K_COSTO_MP, format="%.0f",
-                    help="Pollo, poroto alubia, masa integral y vegetales por bandeja.")
+                    help="Pollo, poroto alubia, masa integral y vegetales por tanda de 8.")
     st.number_input("Precio de venta por tartaleta ($)", min_value=0.0, step=100.0,
                     key=K_PRECIO, format="%.0f",
-                    help="Precio sugerido al publico por unidad.")
+                    help="Precio sugerido al público por unidad entera.")
     st.number_input("Costo por operario / jornada ($)", min_value=0.0, step=1000.0,
                     key=K_COSTO_OP, format="%.0f",
                     help="Costo fijo de mano de obra por operario y por jornada.")
-    st.number_input("Inversion inicial en equipamiento ($)", min_value=0.0, step=10000.0,
+    st.number_input("Inversión inicial en equipamiento ($)", min_value=0.0, step=10000.0,
                     key=K_INVERSION, format="%.0f",
                     help="Horno, mesada y utensilios (se recupera con la rentabilidad).")
 
-    st.markdown("#### 3 · Experimento")
-    st.select_slider("Replicas (corridas del experimento)", options=[1, 10, 20, 30],
+    sub_seccion("3 · Experimento")
+    st.select_slider("Réplicas (corridas del experimento)", options=[1, 10, 20, 30],
                      key=K_REPLICAS,
                      help="Repeticiones independientes para promediar los KPIs con IC 95%.")
 
+    tandas = (prod.DEMANDA_TARTALETAS + prod.TARTALETAS_POR_LOTE - 1) // prod.TARTALETAS_POR_LOTE
     st.info(
-        f"Cada lote rinde **{prod.TARTALETAS_POR_LOTE}** tartaletas. "
-        f"Etapa 1: Normal({prod.MASA_MEDIA:.0f}, {prod.MASA_DESVIO:.0f}) min · "
-        f"Etapa 2: horno fijo {prod.HORNEADO_FIJO:.0f} min · "
-        f"Etapa 3: Uniforme[{prod.ENSAMBLE_MIN:.0f}-{prod.ENSAMBLE_MAX:.0f}] min. "
-        f"Consumo: {prod.N_COMENSALES} comensales (arribos exponenciales en "
-        f"{prod.VENTANA_ARRIBOS_MIN:.0f} min, igual que la Pestania 1).")
+        f"**Tanda fija de {prod.TARTALETAS_POR_LOTE} tartaletas enteras** · tiempos FIJOS → "
+        f"Etapa 1 Cocción del Relleno **{prod.TIEMPO_RELLENO:.0f} min** · "
+        f"Etapa 2 Horneado de la Masa **{prod.TIEMPO_HORNEADO_MASA:.0f} min** · "
+        f"Etapa 3 Armado y Gratinado **{prod.TIEMPO_GRATINADO:.0f} min** (el armado va "
+        f"solapado dentro del gratinado final). **Despacho entero:** {prod.N_COMENSALES} "
+        f"comensales = {prod.DEMANDA_TARTALETAS} tartaletas → "
+        f"ceil({prod.DEMANDA_TARTALETAS}/{prod.TARTALETAS_POR_LOTE}) = **{tandas} tandas** de "
+        f"horneado. Arribos exponenciales (media 1,32 min, igual que la Pestaña 1).")
 
     st.markdown("")
-    return st.button("►  Simular produccion", type="primary", width="stretch")
+    return st.button("►  Simular producción", type="primary", width="stretch")
 
 
 def _ejecutar() -> None:
@@ -91,10 +95,10 @@ def _ejecutar() -> None:
         inversion_inicial=float(st.session_state[K_INVERSION]),
     )
     n_rep = int(st.session_state[K_REPLICAS])
-    barra = st.progress(0.0, text=f"Simulando {n_rep} jornada/s de produccion...")
+    barra = st.progress(0.0, text=f"Simulando {n_rep} jornada/s de producción...")
 
     def _avance(rep: int, total: int) -> None:
-        barra.progress(rep / total, text=f"Replica {rep} / {total}")
+        barra.progress(rep / total, text=f"Réplica {rep} / {total}")
 
     agg = prod.correr_experimento(cfg, n_replicas=n_rep, progreso=_avance)
     barra.empty()
@@ -117,16 +121,18 @@ def _mostrar_kpis(agg: prod.ProductionAggregated) -> None:
                    "ni construir Intervalos de Confianza. Usá 10, 20 o 30 réplicas.")
 
     fila1 = st.columns(2)
-    tarjeta_kpi(fila1[0], "Tartaletas producidas",
+    tarjeta_kpi(fila1[0], "Tartaletas enteras producidas",
                 f"{agg.media('tartaletas_producidas'):.0f}",
-                ic("tartaletas_producidas"), PALETA["verde"], "▣")
-    tarjeta_kpi(fila1[1], "Tiempo prom. fabricacion lote",
+                f"{agg.media('lotes_producidos'):.0f} tandas de "
+                f"{prod.TARTALETAS_POR_LOTE} · {ic('tartaletas_producidas')}",
+                PALETA["verde"], "▣")
+    tarjeta_kpi(fila1[1], "Tiempo prom. ciclo de tanda",
                 f"{agg.media('tiempo_fab_promedio'):.1f} min",
-                ic("tiempo_fab_promedio"), PALETA["txt_suave"], "◔")
+                ic("tiempo_fab_promedio"), PALETA["slate"], "◔")
 
     fila2 = st.columns(2)
     color_espera = PALETA["rojo"] if agg.media("espera_maxima") > 5 else PALETA["ambar"]
-    tarjeta_kpi(fila2[0], "Espera maxima por alimento",
+    tarjeta_kpi(fila2[0], "Espera máxima en fila de despacho",
                 f"{agg.media('espera_maxima'):.1f} min",
                 ic("espera_maxima"), color_espera, "▼")
     tarjeta_kpi(fila2[1], "Stock remanente al cierre",
@@ -134,7 +140,7 @@ def _mostrar_kpis(agg: prod.ProductionAggregated) -> None:
                 PALETA["verde"], "▲")
 
     # --- KPIs economico-financieros (req. 3) ---
-    st.markdown("##### Viabilidad economica (escenario de venta)")
+    sub_seccion("Viabilidad económica (escenario de venta)")
     fila3 = st.columns(2)
     rent = agg.media("rentabilidad")
     color_rent = PALETA["verde"] if rent > 0 else PALETA["rojo"]
@@ -148,7 +154,7 @@ def _mostrar_kpis(agg: prod.ProductionAggregated) -> None:
         valor_pb = f"{payback:.1f} jornadas"
         sub_pb = f"para recuperar $ {agg.config.inversion_inicial:,.0f}"
         color_pb = PALETA["ambar"]
-    tarjeta_kpi(fila3[1], "Recupero de inversion (payback)",
+    tarjeta_kpi(fila3[1], "Recupero de inversión (payback)",
                 valor_pb, sub_pb, color_pb, "◷")
 
 
@@ -156,9 +162,10 @@ def render() -> None:
     """Punto de entrada de la Pestania 2, invocado desde main.py."""
     _inicializar_estado()
     st.markdown(
-        "<div class='bloque-titulo'><h1>Cadena de Produccion &amp; Abastecimiento</h1>"
-        "<p>Fabricacion de tartaletas en la cocina de la Planta Piloto: tasa de "
-        "produccion contra ritmo de consumo de los comensales.</p></div>",
+        "<div class='bloque-titulo'><h1>Cadena de Producción &amp; Abastecimiento</h1>"
+        "<p>Modelo multi-etapa de la cocina de la Planta Piloto: tandas fijas de 8 "
+        "tartaletas (relleno 30′ · masa 15′ · gratinado 10′) contra el ritmo de consumo "
+        "entero de los 64 comensales.</p></div>",
         unsafe_allow_html=True)
 
     col_ctrl, col_res = st.columns([1, 2.4], gap="large")
@@ -170,18 +177,19 @@ def render() -> None:
 
     with col_res:
         if K_RESULT not in st.session_state:
-            st.info("Configura los recursos de cocina y ejecuta la simulacion de produccion.")
+            st.info("Configurá los recursos de cocina y ejecutá la simulación de producción.")
             return
         agg = st.session_state[K_RESULT]
         cfg = agg.config
         st.subheader(
             f"Resultados · {cfg.operarios} operario/s · horno x{cfg.horno_slots} · "
-            f"{agg.n_replicas} replica/s")
+            f"{agg.n_replicas} réplica/s")
         _mostrar_kpis(agg)
-        st.markdown("")
-        st.markdown("##### Evolucion temporal del stock")
-        st.pyplot(charts.figura_stock(agg, figsize=(8.0, 3.8)), width="stretch")
-        with st.expander("Diagnostico de viabilidad organizacional", expanded=True):
+        st.divider()
+        sub_seccion("Evolución temporal del stock de despacho")
+        st.caption("Zoom con scroll, paneo arrastrando y clic en la leyenda para ocultar series.")
+        st.plotly_chart(charts.figura_stock(agg), width="stretch")
+        with st.expander("📋 Diagnóstico de viabilidad organizacional", expanded=True):
             st.code(prod.generar_diagnostico(agg), language=None)
 
         # Validacion y Verificacion del generador de arribos (req. 5).

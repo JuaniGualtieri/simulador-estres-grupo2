@@ -1,8 +1,12 @@
-# Dependencias de la Suite de Simulacion v3.0 - Grupo 2
-# (Pestania 1: estres del Connection Pooler Supabase | Pestania 2: cadena de produccion)
+# Dependencias de la Suite de Simulacion v7.0 - Grupo 2
+# (Pestania 1: estres del Connection Pooler Supabase | Pestania 2: cadena de
+#  produccion multi-etapa | Pestania 3: aceptacion sensorial Monte Carlo)
 # Instalar con:  pip install -r requirements.txt
 streamlit>=1.40
 simpy>=4.1
 numpy>=1.26
-matplotlib>=3.8
+plotly>=6.0
+kaleido>=0.2          # Exportacion estatica de las figuras Plotly al PDF (requiere Chrome).
 reportlab>=4.0
+# Nota: si la exportacion de imagenes del PDF fallara, instalar Chrome para kaleido con:
+#   python -m kaleido_get_chrome      (o)      plotly_get_chrome

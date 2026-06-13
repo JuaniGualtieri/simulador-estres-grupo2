@@ -27,8 +27,10 @@ from typing import List, Optional
 from sim.server_sim import (AggregatedResult, FILL_TIME_MAX, FILL_TIME_MIN,
                             GATEWAY_TIMEOUT, ScenarioConfig)
 from sim.server_sim import generar_diagnostico as diagnostico_servidor
-from sim.production_sim import (ProductionAggregated, STOCK_INICIAL_LOTES,
-                               TARTALETAS_POR_LOTE, VENTANA_ARRIBOS_MIN)
+from sim.production_sim import (DEMANDA_TARTALETAS, ProductionAggregated,
+                               STOCK_INICIAL_LOTES, TARTALETAS_POR_LOTE,
+                               TIEMPO_GRATINADO, TIEMPO_HORNEADO_MASA, TIEMPO_RELLENO,
+                               VENTANA_ARRIBOS_MIN)
 from sim.production_sim import generar_diagnostico as diagnostico_produccion
 from sim.sensorial_sim import (ATRIBUTOS_BOOL, ATRIBUTOS_SLIDER, ETIQUETAS,
                                N_COMENSALES as SENS_N_COMENSALES,
@@ -77,12 +79,23 @@ def _estilo_tabla(colors):
     ])
 
 
-def _png_temporal(fig, etiqueta: str) -> str:
-    """Renderiza una figura matplotlib a un PNG temporal y devuelve su ruta."""
-    ruta = os.path.join(tempfile.gettempdir(),
-                        f"_g2_{etiqueta}_{os.getpid()}.png")
-    fig.savefig(ruta, dpi=150, facecolor="white")
-    return ruta
+PDF_FIG_WIDTH_PX = 1000   # Ancho de exportacion de las figuras Plotly para el PDF.
+
+
+def _png_temporal(fig, etiqueta: str):
+    """Renderiza una figura Plotly a un PNG temporal (kaleido) y devuelve (ruta, aspecto).
+
+    `aspecto` = alto/ancho de la imagen, para preservar la relacion al embeberla en el
+    PDF. Si la exportacion estatica fallara (p. ej. falta Chrome/kaleido), devuelve
+    (None, 0.0) y el reporte inserta un aviso en lugar de romperse.
+    """
+    try:
+        alto = int(getattr(fig.layout, "height", None) or 380)
+        ruta = os.path.join(tempfile.gettempdir(), f"_g2_{etiqueta}_{os.getpid()}.png")
+        fig.write_image(ruta, format="png", width=PDF_FIG_WIDTH_PX, height=alto, scale=2)
+        return ruta, alto / PDF_FIG_WIDTH_PX
+    except Exception:
+        return None, 0.0
 
 
 def _ic_txt(agg, clave: str, dec: int = 1) -> str:
@@ -117,14 +130,12 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
 
     pool = cfg_server.pool_capacity
 
-    # --- 1) Graficos como PNG estaticos (anexos vectoriales) ---
-    pngs = [
-        _png_temporal(charts.figura_conexiones(agg_server), "conex"),
-        _png_temporal(charts.figura_boxplot(agg_server), "box"),
-        _png_temporal(charts.figura_stock(agg_prod), "stock"),
-    ]
-    png_conex, png_box, png_stock = pngs
-    png_perfil = png_sino = png_demo = png_sens = None
+    # --- 1) Graficos como PNG estaticos (anexos exportados de Plotly via kaleido) ---
+    png_conex = _png_temporal(charts.figura_conexiones(agg_server), "conex")
+    png_box = _png_temporal(charts.figura_boxplot(agg_server), "box")
+    png_stock = _png_temporal(charts.figura_stock(agg_prod), "stock")
+    pngs = [png_conex, png_box, png_stock]
+    png_perfil = png_sino = png_demo = png_sens = (None, 0.0)
     if agg_sensorial is not None:
         png_perfil = _png_temporal(charts.figura_perfil(agg_sensorial), "perfil")
         png_sino = _png_temporal(charts.figura_si_no(agg_sensorial), "sino")
@@ -134,7 +145,7 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
 
     # --- 2) Estilos (aproximacion a APA 7: Times New Roman, jerarquia clara) ---
     base = getSampleStyleSheet()
-    VERDE = colors.HexColor("#2E7D32")
+    VERDE = colors.HexColor("#3C5E4E")   # Verde salvia profundo (paleta moderna del dashboard).
     GRIS = colors.HexColor("#4A4A4A")
     st_titulo = ParagraphStyle("titulo", parent=base["Title"], fontName="Times-Bold",
                                fontSize=20, leading=24, textColor=VERDE, alignment=TA_CENTER)
@@ -153,6 +164,18 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
                             fontSize=9, leading=12, alignment=TA_CENTER, textColor=GRIS)
 
     story: List = []
+
+    def _fig(png, ancho_cm: float = 16.0) -> None:
+        """Agrega una figura Plotly (PNG) al `story` preservando su relacion de aspecto,
+        o un aviso si la exportacion estatica no estuvo disponible."""
+        ruta, aspecto = png
+        if ruta:
+            story.append(Image(ruta, width=ancho_cm * cm,
+                               height=ancho_cm * cm * (aspecto or 0.38)))
+        else:
+            story.append(Paragraph(
+                "<i>Figura no disponible: no se pudo exportar la imagen interactiva "
+                "(verifique la instalacion de kaleido/Chrome para Plotly).</i>", st_diag))
 
     # --- 3) PORTADA INSTITUCIONAL ---
     story.append(Spacer(1, 2.0 * cm))
@@ -249,13 +272,13 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     story.append(Paragraph("Figura 1. <i>Curva de conexiones ocupadas en el tiempo.</i>",
                            st_body))
     story.append(Spacer(1, 0.2 * cm))
-    story.append(Image(png_conex, width=16.0 * cm, height=16.0 * cm * 4.0 / 7.2))
+    _fig(png_conex)
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph(
         "Figura 2. <i>Distribucion de Encuestas Perdidas sobre las N replicas (boxplot).</i>",
         st_body))
     story.append(Spacer(1, 0.2 * cm))
-    story.append(Image(png_box, width=16.0 * cm, height=16.0 * cm * 3.2 / 7.2))
+    _fig(png_box)
 
     # =====================================================================
     # SECCION 2 - VIABILIDAD ORGANIZACIONAL DE PRODUCCION
@@ -265,32 +288,45 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     story.append(Paragraph(
         "Seccion 2. Viabilidad organizacional de la cadena de produccion", st_h2))
     story.append(Paragraph(
-        "Se simulo la cocina de la Planta Piloto como una cadena de tres etapas (masa y "
-        "relleno, horneado y ensamblado), con operarios y horno como recursos limitados. "
-        "Los lotes terminados reponen el stock del mostrador, del que los comensales "
-        "retiran su tartaleta segun la misma distribucion exponencial de arribos de la "
-        "Seccion 1. El cruce entre la tasa de produccion y el ritmo de consumo determina "
-        "la viabilidad operativa y los faltantes de alimento.", st_body))
+        "Se simulo la cocina de la Planta Piloto como una cadena MULTI-ETAPA de tiempos "
+        f"fijos: Etapa 1 Coccion del Relleno ({TIEMPO_RELLENO:.0f} min), Etapa 2 Horneado "
+        f"de la Masa ({TIEMPO_HORNEADO_MASA:.0f} min) y Etapa 3 Armado y Gratinado del "
+        f"Queso ({TIEMPO_GRATINADO:.0f} min, con el armado solapado dentro del gratinado), "
+        "con operarios y horno como recursos limitados. Cada tanda fija de "
+        f"{TARTALETAS_POR_LOTE} tartaletas ENTERAS repone el mostrador de despacho, del que "
+        f"los {agg_prod.config.n_comensales} comensales retiran una unidad ENTERA cada uno "
+        "(regla de despacho entero) segun la misma distribucion exponencial de arribos de "
+        "la Seccion 1. Para cubrir los 64 pedidos se requieren ceil(64/8) = 8 tandas; el "
+        "cruce entre la tasa de produccion y el ritmo de consumo determina la viabilidad "
+        "operativa y los tiempos de espera en la fila de despacho.", st_body))
     story.append(Spacer(1, 0.3 * cm))
 
     # 2.a) Tabla APA de rendimiento de stock.
     story.append(Paragraph(
         "Tabla 2. <i>Rendimiento de la cadena de produccion (promedio de replicas).</i>",
         st_body))
+    tandas_obj = (DEMANDA_TARTALETAS + TARTALETAS_POR_LOTE - 1) // TARTALETAS_POR_LOTE
     datos_prod = [
         ["Indicador", "Promedio [IC 95%]"],
         ["Operarios de cocina", f"{cfg_prod.operarios}"],
-        ["Capacidad del horno (lotes simultaneos)", f"{cfg_prod.horno_slots}"],
+        ["Capacidad del horno (tandas simultaneas)", f"{cfg_prod.horno_slots}"],
         ["Comensales / ventana de arribos",
-         f"{cfg_prod.n_comensales} en {VENTANA_ARRIBOS_MIN:.0f} min"],
-        ["Tartaletas por lote", f"{TARTALETAS_POR_LOTE}"],
+         f"{cfg_prod.n_comensales} en {VENTANA_ARRIBOS_MIN:.1f} min"],
+        ["Regla de despacho",
+         f"1 tartaleta ENTERA por comensal ({DEMANDA_TARTALETAS} en total)"],
+        ["Tanda fija de horneado", f"{TARTALETAS_POR_LOTE} tartaletas enteras"],
+        ["Etapa 1 - Coccion del Relleno", f"{TIEMPO_RELLENO:.0f} min fijos (operario)"],
+        ["Etapa 2 - Horneado de la Masa", f"{TIEMPO_HORNEADO_MASA:.0f} min fijos (horno)"],
+        ["Etapa 3 - Armado y Gratinado",
+         f"{TIEMPO_GRATINADO:.0f} min fijos (horno; armado solapado)"],
+        ["Tandas requeridas (ceil 64/8)", f"{tandas_obj}"],
         ["Total de tartaletas producidas", _ic_txt(agg_prod, "tartaletas_producidas", 0)],
-        ["Lotes producidos", _ic_txt(agg_prod, "lotes_producidos")],
-        ["Tiempo promedio de fabricacion de un lote (min)",
+        ["Tandas producidas", _ic_txt(agg_prod, "lotes_producidos")],
+        ["Tiempo promedio de ciclo de una tanda (min)",
          _ic_txt(agg_prod, "tiempo_fab_promedio")],
-        ["Tiempo maximo de espera de un comensal (min)",
+        ["Espera maxima en la fila de despacho (min)",
          _ic_txt(agg_prod, "espera_maxima")],
-        ["Comensales que esperaron alimento", _ic_txt(agg_prod, "comensales_en_espera")],
+        ["Comensales que esperaron en la fila", _ic_txt(agg_prod, "comensales_en_espera")],
         ["Stock remanente al cierre (tartaletas)", _ic_txt(agg_prod, "stock_remanente", 0)],
     ]
     tabla_prod = Table(datos_prod, colWidths=[9.5 * cm, 6.5 * cm])
@@ -330,7 +366,7 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         "Figura 3. <i>Evolucion del nivel de stock (zona roja = faltante de alimento).</i>",
         st_body))
     story.append(Spacer(1, 0.2 * cm))
-    story.append(Image(png_stock, width=16.0 * cm, height=16.0 * cm * 4.0 / 7.2))
+    _fig(png_stock)
 
     # =====================================================================
     # SECCION 3 - ACEPTACION SENSORIAL DEL PRODUCTO (MONTE CARLO)
@@ -411,25 +447,25 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
             "Figura 4. <i>Perfil sensorial: puntaje medio por atributo (umbral de aceptacion = 6).</i>",
             st_body))
         story.append(Spacer(1, 0.2 * cm))
-        story.append(Image(png_perfil, width=16.0 * cm, height=16.0 * cm * 3.6 / 7.2))
+        _fig(png_perfil)
         story.append(Spacer(1, 0.35 * cm))
         story.append(Paragraph(
-            "Figura 5. <i>Preguntas cualitativas (Si / No) sobre el total de comensales.</i>",
+            "Figura 5. <i>Preguntas cualitativas (Si / No), barras 100% apiladas.</i>",
             st_body))
         story.append(Spacer(1, 0.2 * cm))
-        story.append(Image(png_sino, width=16.0 * cm, height=16.0 * cm * 2.4 / 7.2))
+        _fig(png_sino)
         story.append(Spacer(1, 0.35 * cm))
         story.append(Paragraph(
             "Figura 6. <i>Perfil demografico del panel: distribucion de edades y sexo.</i>",
             st_body))
         story.append(Spacer(1, 0.2 * cm))
-        story.append(Image(png_demo, width=16.0 * cm, height=16.0 * cm * 3.0 / 7.2))
+        _fig(png_demo)
         story.append(Spacer(1, 0.35 * cm))
         story.append(Paragraph(
             "Figura 7. <i>Analisis de sensibilidad: aceptacion global vs Sabor general.</i>",
             st_body))
         story.append(Spacer(1, 0.2 * cm))
-        story.append(Image(png_sens, width=16.0 * cm, height=16.0 * cm * 3.2 / 7.2))
+        _fig(png_sens)
 
     # =====================================================================
     # BLOQUE DE DIAGNOSTICOS Y RECOMENDACIONES
@@ -447,7 +483,8 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         story.append(Paragraph(texto, st_diag))
     story.append(Spacer(1, 0.6 * cm))
     story.append(Paragraph(
-        "Reporte generado automaticamente por la Suite de Simulacion v4.0 - Grupo 2.",
+        "Reporte generado automaticamente por la Suite de Simulacion v7.0 "
+        "(modelo multi-etapa de produccion) - Grupo 2.",
         st_pie))
 
     # --- Construir el documento sobre un buffer en memoria ---
@@ -462,8 +499,10 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     pdf_bytes = buffer.getvalue()
     buffer.close()
 
-    # Limpieza de los PNG temporales.
-    for ruta_png in pngs:
+    # Limpieza de los PNG temporales (cada entrada es (ruta, aspecto)).
+    for ruta_png, _aspecto in pngs:
+        if not ruta_png:
+            continue
         try:
             os.remove(ruta_png)
         except OSError:

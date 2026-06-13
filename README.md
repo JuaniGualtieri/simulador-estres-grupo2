@@ -1,4 +1,4 @@
-# Simulación de Eventos Discretos — Grupo 2 (v3.0)
+# Simulación de Eventos Discretos — Grupo 2 (v7.0)
 
 Aplicación **web** (Streamlit) que unifica **dos modelos de simulación de eventos
 discretos** (SimPy) en una interfaz multipestaña, bajo una arquitectura **modular**
@@ -39,15 +39,17 @@ colgadas + reintentos se superponen y la curva de conexiones crece de forma din�
 Fabricación física de las tartaletas en la cocina de la Planta Piloto, cruzando la tasa
 de producción contra el ritmo de consumo de los comensales.
 
-- **Recursos:** *operarios* `[1–5]` y *capacidad del horno* `[1–4]` lotes simultáneos.
-- **Flujo (3 etapas):** Etapa 1 Masa/Relleno `Normal(15, 2) min` (operario) → Etapa 2
-  Horneado `20 min fijos` (horno) → Etapa 3 Ensamblado `Uniforme[3, 5] min` (operario).
-  Cada lote rinde 6 tartaletas.
+- **Recursos:** *operarios* `[1–5]` y *capacidad del horno* `[1–4]` tandas simultáneas.
+- **Flujo multi-etapa (tiempos FIJOS, tanda de 8 tartaletas enteras):** Etapa 1 Cocción
+  del Relleno `30 min` (operario) → Etapa 2 Horneado de la Masa `15 min` (horno) → Etapa 3
+  Armado y Gratinado del Queso `10 min` (horno; el armado va solapado dentro del gratinado).
+- **Regla de despacho entero:** cada comensal consume **1 tartaleta entera**; la demanda
+  total es de **64 tartaletas** para los 64 comensales → `ceil(64/8) = 8 tandas` de horneado.
 - **Acoplamiento intercátedra:** los comensales llegan con la **misma exponencial** que
-  la Pestaña 1 y retiran 1 tartaleta del stock; si no hay, entran a la cola de espera por
-  alimento hasta que un lote reponga el mostrador.
-- **KPIs:** tartaletas producidas, tiempo medio de fabricación de un lote, espera máxima
-  por alimento y stock remanente. **Gráfico** de evolución del stock con **zona roja**
+  la Pestaña 1 (media 1,32 min) y retiran 1 tartaleta entera del mostrador; si no hay,
+  entran a la **fila de despacho** hasta que una tanda reponga el stock.
+- **KPIs:** tartaletas producidas, tiempo medio de ciclo de una tanda, espera máxima en la
+  fila de despacho y stock remanente. **Gráfico** de evolución del stock con **zona roja**
   cuando cae a cero.
 
 ### 📄 Reporte PDF (Normas APA 7)
@@ -70,7 +72,7 @@ sim/
   server_sim.py              Motor matemático puro: pooler Supabase + Wi-Fi inestable.
   production_sim.py          Motor matemático puro: cadena de producción + consumo.
 utils/
-  charts.py                  Primitivas matplotlib (compartidas por vistas y PDF).
+  charts.py                  Figuras Plotly interactivas (compartidas por vistas y PDF).
   pdf_generator.py           Compilación del reporte APA y descarga.
 .streamlit/config.toml       Tema premium de la app.
 ```
@@ -93,6 +95,11 @@ streamlit run main.py
 ```
 
 La app abre en `http://localhost:8501`.
+
+> **Gráficos Plotly y PDF:** las figuras son interactivas (Plotly). El reporte PDF las
+> embebe como PNG estáticos vía **kaleido**, que necesita Chrome. Si la exportación
+> fallara, instalá el navegador con `plotly_get_chrome` (o `python -m kaleido_get_chrome`);
+> el PDF igualmente se genera, mostrando un aviso en lugar de la figura faltante.
 
 ---
 

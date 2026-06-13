@@ -91,6 +91,23 @@ N_REPLICAS_DEFAULT = 30       # Replicas por defecto para estabilizar promedios.
 # El cuantil del IC 95% (t-Student para n<30, Normal Z=1,96 para n>=30) y su seleccion
 # automatica viven en sim/estadistica.py para no duplicar la matematica del muestreo.
 
+# =============================================================================
+# CASO REAL: REGISTROS DEL STAND EN LA FACULTAD (jornada del 11/06/2026)
+# -----------------------------------------------------------------------------
+# Parametros medidos en el stand: 64 comensales reales atendidos entre las 08:19:08
+# y las 09:42:25 (duracion total = 83,3 min). El analisis de los timestamps de arribo
+# arrojo una EXPONENCIAL con media de 1,32 min (79,3 s) entre llegadas, respaldada por
+# un desvio estandar empirico de 79,1 s (que en una Exponencial debe coincidir con la
+# media, lo que valida el ajuste). El generador se calibra con la media: como la
+# propiedad tasa_arribo_media = ventana / comensales, fijamos la ventana en
+# 79,3 s x 64 = 5075,2 s para que E(X) sea exactamente 79,3 s = 1,32 min.
+# =============================================================================
+CASO_REAL_N_COMENSALES = 64                                   # Comensales reales del stand.
+CASO_REAL_MEDIA_ARRIBO_SEG = 79.3                             # Media Exponencial empirica (s) = 1,32 min.
+CASO_REAL_DESVIO_ARRIBO_SEG = 79.1                            # Desvio estandar empirico (s) (≈ media).
+CASO_REAL_DURACION_MIN = 83.3                                 # Duracion real (08:19:08 -> 09:42:25).
+CASO_REAL_VENTANA_SEG = CASO_REAL_MEDIA_ARRIBO_SEG * CASO_REAL_N_COMENSALES  # 5075,2 s.
+
 # Etiquetas de resultado de un intento de envio.
 EXITO = "EXITO"
 ERR_504_POOL = "ERR_504_POOL"      # 504 por SATURACION del pooler (no hubo cupo a tiempo).
@@ -122,16 +139,39 @@ class ScenarioConfig:
         return self.ventana_arribos_seg / self.n_comensales
 
 
-# Presets de la consigna. Los botones "Optimista / Esperado / Pesimista" reubican los
-# sliders en estas configuraciones logicas; el usuario luego puede ajustarlos a mano.
+# Presets de la consigna. El boton "Caso Real" reproduce los registros del stand; los
+# botones "Optimista / Esperado / Pesimista" son escenarios contrafacticos (mismos 64
+# comensales reales bajo otras condiciones de red) que reubican los sliders en una
+# configuracion logica; el usuario luego puede ajustarlos a mano.
+PRESET_CASO_REAL = "Caso Real: Stand Facultad"
 PRESETS: Dict[str, ScenarioConfig] = {
+    PRESET_CASO_REAL: ScenarioConfig(
+        nombre=PRESET_CASO_REAL,
+        descripcion=(
+            "Preset OFICIAL calibrado con los registros del stand en la Facultad "
+            "(11/06/2026, de 08:19:08 a 09:42:25 = 83,3 min). Los 64 comensales reales "
+            "arribaron segun una EXPONENCIAL de media 1,32 min (79,3 s) entre llegadas, "
+            "respaldada por un desvio estandar empirico de 79,1 s. Wi-Fi del campus "
+            "estable con microcortes esporadicos que los reintentos recuperan."
+        ),
+        n_comensales=CASO_REAL_N_COMENSALES,
+        pool_capacity=POOLER_CAPACITY,
+        ventana_arribos_seg=CASO_REAL_VENTANA_SEG,  # E(X) = 79,3 s = 1,32 min exactos.
+        latencia_media=0.25,              # 250 ms medidos en el campus.
+        latencia_desvio=0.05,
+        prob_cuelgue=0.03,
+        cuelgue_media=2.0,
+        prob_error_red=0.01,
+        max_reintentos=2,
+    ),
     "Optimista": ScenarioConfig(
         nombre="Optimista",
         descripcion=(
-            "Arribos espaciados a lo largo de una jornada de ~5 h. Wi-Fi de alta "
-            "velocidad (latencia ~100 ms) y 0% de errores. El pooler trabaja holgado."
+            "Contrafactico: los 64 comensales reales arribando espaciados a lo largo de "
+            "una jornada de ~5 h. Wi-Fi de alta velocidad (latencia ~100 ms) y 0% de "
+            "errores. El pooler trabaja holgado."
         ),
-        n_comensales=50,
+        n_comensales=CASO_REAL_N_COMENSALES,
         pool_capacity=POOLER_CAPACITY,
         ventana_arribos_seg=5 * 3600,     # 5 horas.
         latencia_media=0.10,              # 100 ms.
@@ -144,11 +184,11 @@ PRESETS: Dict[str, ScenarioConfig] = {
     "Esperado": ScenarioConfig(
         nombre="Esperado",
         descripcion=(
-            "Transito fluido en lotes normales durante ~2,5 h. Internet promedio: "
-            "NORMAL(0,25 s; 0,05 s) como pide la catedra. Pooler estable con fallos "
-            "esporadicos que los reintentos recuperan."
+            "Contrafactico: 64 comensales con transito fluido durante ~2,5 h. Internet "
+            "promedio NORMAL(0,25 s; 0,05 s) como pide la catedra. Pooler estable con "
+            "fallos esporadicos que los reintentos recuperan."
         ),
-        n_comensales=50,
+        n_comensales=CASO_REAL_N_COMENSALES,
         pool_capacity=POOLER_CAPACITY,
         ventana_arribos_seg=int(2.5 * 3600),  # 2,5 horas.
         latencia_media=0.25,                  # 250 ms (consigna).
@@ -161,12 +201,12 @@ PRESETS: Dict[str, ScenarioConfig] = {
     "Pesimista": ScenarioConfig(
         nombre="Pesimista",
         descripcion=(
-            "Concurrencia masiva destructiva: los 50 comensales envian dentro de una "
-            "ventana critica de 2 minutos por aglomeracion. Wi-Fi degradada: las "
-            "conexiones se CUELGAN (retransmisiones TCP) y se acumulan en el pooler -> "
-            "rafaga dinamica de timeouts 504."
+            "Contrafactico destructivo: los 64 comensales envian dentro de una ventana "
+            "critica de 2 minutos por aglomeracion. Wi-Fi degradada: las conexiones se "
+            "CUELGAN (retransmisiones TCP) y se acumulan en el pooler -> rafaga dinamica "
+            "de timeouts 504."
         ),
-        n_comensales=50,
+        n_comensales=CASO_REAL_N_COMENSALES,
         pool_capacity=POOLER_CAPACITY,
         ventana_arribos_seg=120,          # 2 minutos.
         latencia_media=0.90,              # Wi-Fi degradada.
@@ -178,11 +218,11 @@ PRESETS: Dict[str, ScenarioConfig] = {
     ),
 }
 
-# Valores por defecto de los sliders (coinciden con el preset "Esperado" de la consigna).
+# Valores por defecto de los sliders (coinciden con el preset oficial "Caso Real").
 SLIDER_DEFAULTS = {
-    "n_comensales": 50,         # Rango [10 - 150].
-    "pool_capacity": 60,        # Rango [10 - 200].
-    "latencia_ms": 250,         # Rango [50 - 5000] ms (Escenario Esperado).
+    "n_comensales": CASO_REAL_N_COMENSALES,   # 64 comensales reales. Rango [10 - 150].
+    "pool_capacity": 60,                      # Rango [10 - 200].
+    "latencia_ms": 250,                       # Rango [50 - 5000] ms (Caso Real / Esperado).
 }
 
 

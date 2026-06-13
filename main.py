@@ -49,12 +49,14 @@ def _panel_reporte() -> None:
         st.markdown(
             f"""
             <div style="background:{PALETA['verde_suave']};border-radius:12px;
-            padding:12px 14px;font-size:0.82rem;color:{PALETA['txt_suave']};">
-            <b style="color:{PALETA['verde']};">Sistema real modelado</b><br>
+            padding:13px 15px;font-size:0.82rem;color:{PALETA['txt_suave']};
+            border:1px solid {PALETA['borde']};">
+            <b style="color:{PALETA['verde']};">Sistema real modelado · Caso Real</b><br>
+            · 64 comensales · 11/06/2026 · jornada de 83,3 min<br>
             · 60 conexiones (plan gratuito Supabase)<br>
             · 12 preguntas sensoriales (5 dimensiones, escala 1-10)<br>
-            · 50 comensales · 11/06/2026 · Planta Piloto<br>
-            · Conexion directa Client-to-Cloud
+            · Tandas de 8 tartaletas (relleno 30′ · masa 15′ · gratinado 10′)<br>
+            · Conexión directa Client-to-Cloud
             </div>
             """,
             unsafe_allow_html=True)
@@ -98,7 +100,7 @@ def _panel_reporte() -> None:
 def main() -> None:
     st.markdown(
         "<div class='bloque-titulo'><h1>Simulador de Eventos Discretos</h1>"
-        "<p>Universidad de la Cuenca del Plata · TPI Intercatedra e Intercarrera · "
+        "<p>Universidad de la Cuenca del Plata · TPI Intercátedra e Intercarrera · "
         "Grupo 2 · Tartaleta vegetal sustentable (Planta Piloto, 11/06/2026)</p></div>",
         unsafe_allow_html=True)
 
