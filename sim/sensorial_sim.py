@@ -64,8 +64,12 @@ from sim.estadistica import cuantil_ic95, intervalo_confianza_95
 # ---------------------------------------------------------------------------
 # PARAMETROS GENERALES DEL MODELO SENSORIAL
 # ---------------------------------------------------------------------------
-N_COMENSALES = 50                  # Jueces minimos del evento (consigna de catedra).
+N_COMENSALES = 64                  # Comensales reales del stand (alineado 100% con las encuestas).
 N_PREGUNTAS_TOTAL = 12             # Campos obligatorios de la encuesta real (auditado).
+
+# Distribucion de la pregunta de sexo del Forms real: [Masculino, Femenino, Otro].
+SEXOS = ("Masculino", "Femenino", "Otro")
+PROB_SEXO = (0.48, 0.48, 0.04)     # Mayoria M/F con una minoria que responde "Otro".
 ANIO_REFERENCIA = 2026             # Anio del evento (para convertir ano_nacimiento -> edad).
 ESCALA_MIN = 1                     # Minimo de los sliders ("ni me gusta ni me disgusta").
 ESCALA_MAX = 10                    # Maximo de los sliders ("me gusta mucho").
@@ -74,7 +78,7 @@ UMBRAL_ACEPTACION = 6              # Un comensal "acepta" si su 'sabor_general' 
 SIGMA_PREGUNTA = 1.3               # Desvio del puntaje atributo a atributo.
 SIGMA_COMENSAL = 0.8               # Heterogeneidad entre jueces (exigencia personal).
 SEED_BASE = 2026                   # Semilla base para reproducibilidad.
-N_ITERS_DEFAULT = 100              # Eventos Monte Carlo por defecto.
+N_ITERS_DEFAULT = 30               # Cantidad de experimentos por defecto.
 PROB_COMENTARIO = 0.4              # Fraccion de comensales que dejan comentario libre.
 
 # --- Los 8 sliders numericos (1-10) de la encuesta, en orden de aparicion ---
@@ -229,8 +233,8 @@ class SensorialAggregated:
     metodo_ic: str = "na"
     cuantil_ic: float = 0.0
     gl_ic: int = 0
-    # Analisis de sensibilidad del atributo Sabor general.
-    sens_sabor_medias: List[float] = field(default_factory=list)   # mu objetivo de sabor.
+    # Analisis de sensibilidad respecto de la calidad de preparacion en cocina.
+    sens_calidades: List[float] = field(default_factory=list)      # Nivel de calidad (1..10).
     sens_aceptacion: List[float] = field(default_factory=list)     # % aceptacion resultante.
     # Panel representativo de comensales (un evento) para demografia/cualitativas/comentarios.
     panel: List[RespuestaComensal] = field(default_factory=list)
@@ -331,21 +335,25 @@ def _simular_evento(cfg: SensorialConfig, rng: np.random.Generator,
     return resultado
 
 
-def _barrido_sabor(cfg: SensorialConfig, rng: np.random.Generator,
-                   prob_si: Dict[str, float],
-                   eventos_por_punto: int = 40) -> Tuple[List[float], List[float]]:
-    """Analisis de sensibilidad: aceptacion global al variar la media del sabor general.
+def _barrido_calidad(cfg: SensorialConfig, rng: np.random.Generator,
+                     eventos_por_punto: int = 40) -> Tuple[List[float], List[float]]:
+    """Analisis de sensibilidad: aceptacion global proyectada para cada nivel de CALIDAD
+    de preparacion en cocina (1..10).
 
-    Fija la media de 'sabor_general' en cada entero de la escala (1..10), mantiene el resto
-    de atributos segun la calidad de cocina actual y promedia la aceptacion resultante.
+    Para cada calidad recalcula las medias y probabilidades de TODOS los atributos con el
+    mismo modelo Monte Carlo (la calidad desplaza las distribuciones), de modo que la
+    curva refleja como escala la aceptacion al mover el slider. El punto correspondiente a
+    la calidad elegida por el usuario es el que la vista resalta como "configuracion
+    actual": al mover el slider, ese punto se desplaza por la curva en tiempo real.
     """
     calidades: List[float] = []
     aceptaciones: List[float] = []
-    for mu_sabor in range(ESCALA_MIN, ESCALA_MAX + 1):
-        medias = _medias_por_atributo(cfg.calidad_cocina, override_sabor=mu_sabor)
+    for cal in range(ESCALA_MIN, ESCALA_MAX + 1):
+        medias = _medias_por_atributo(cal)
+        prob_si = _prob_si_por_atributo(cal)
         accs = [_simular_evento(cfg, rng, medias, prob_si)["tasa_aceptacion"]
                 for _ in range(eventos_por_punto)]
-        calidades.append(float(mu_sabor))
+        calidades.append(float(cal))
         aceptaciones.append(statistics.fmean(accs))
     return calidades, aceptaciones
 
@@ -390,7 +398,7 @@ def _generar_panel(cfg: SensorialConfig, rng: np.random.Generator,
         }
         cualitativas = {b: bool(rng.random() < prob_si[b]) for b in ATRIBUTOS_BOOL}
         edad = _muestrear_edad(rng)
-        sexo = "Masculino" if rng.random() < 0.5 else "Femenino"
+        sexo = str(rng.choice(SEXOS, p=PROB_SEXO))
         acepta = sliders["sabor_general"] >= UMBRAL_ACEPTACION
         comentario = _muestrear_comentario(rng, acepta, sliders["sabor_general"])
         panel.append(RespuestaComensal(
@@ -431,9 +439,9 @@ def correr_experimento(cfg: SensorialConfig, n_iteraciones: int = N_ITERS_DEFAUL
         agg.muestras[clave] = valores
     agg.cuantil_ic, agg.metodo_ic, agg.gl_ic = cuantil_ic95(n_iteraciones)
 
-    # Analisis de sensibilidad del sabor general (semilla propia, reproducible).
+    # Analisis de sensibilidad respecto de la calidad de cocina (semilla propia, reproducible).
     rng_sens = np.random.default_rng(semilla_base + 9999)
-    agg.sens_sabor_medias, agg.sens_aceptacion = _barrido_sabor(cfg, rng_sens, prob_si)
+    agg.sens_calidades, agg.sens_aceptacion = _barrido_calidad(cfg, rng_sens)
 
     # Panel representativo de comensales (semilla propia, reproducible).
     rng_panel = np.random.default_rng(semilla_base + 4242)
@@ -449,6 +457,7 @@ class ResumenDemografico:
     n: int
     n_masculino: int
     n_femenino: int
+    n_otro: int
     edad_media: float
     edad_min: int
     edad_max: int
@@ -461,17 +470,23 @@ class ResumenDemografico:
     def pct_femenino(self) -> float:
         return 100.0 * self.n_femenino / self.n if self.n else 0.0
 
+    @property
+    def pct_otro(self) -> float:
+        return 100.0 * self.n_otro / self.n if self.n else 0.0
+
 
 def resumen_demografico(agg: SensorialAggregated) -> ResumenDemografico:
     """Sintetiza la demografia del panel representativo (sexo y edades)."""
     panel = agg.panel
     n = len(panel)
     if n == 0:
-        return ResumenDemografico(0, 0, 0, 0.0, 0, 0)
+        return ResumenDemografico(0, 0, 0, 0, 0.0, 0, 0)
     n_masc = sum(1 for c in panel if c.sexo == "Masculino")
+    n_fem = sum(1 for c in panel if c.sexo == "Femenino")
+    n_otro = n - n_masc - n_fem
     edades = [c.edad for c in panel]
     return ResumenDemografico(
-        n=n, n_masculino=n_masc, n_femenino=n - n_masc,
+        n=n, n_masculino=n_masc, n_femenino=n_fem, n_otro=n_otro,
         edad_media=statistics.fmean(edades), edad_min=min(edades), edad_max=max(edades))
 
 
@@ -493,7 +508,7 @@ def generar_diagnostico(agg: SensorialAggregated) -> str:
 
     lineas: List[str] = []
     lineas.append(f"DIAGNOSTICO DE ACEPTACION SENSORIAL "
-                  f"(Monte Carlo, {agg.n_iteraciones} eventos simulados)")
+                  f"({agg.n_iteraciones} experimentos simulados)")
     lineas.append("-" * 64)
     lineas.append(
         f"Calidad de preparacion en cocina: {cfg.calidad_cocina}/10. Puntaje global medio: "
@@ -524,17 +539,17 @@ def generar_diagnostico(agg: SensorialAggregated) -> str:
     if demo.n:
         lineas.append(
             f"Panel: {demo.n} comensales ({demo.pct_masculino:.0f}% masculino / "
-            f"{demo.pct_femenino:.0f}% femenino), edad media {demo.edad_media:.0f} anios "
-            f"(rango {demo.edad_min}-{demo.edad_max}).")
+            f"{demo.pct_femenino:.0f}% femenino / {demo.pct_otro:.0f}% otro), edad media "
+            f"{demo.edad_media:.0f} anios (rango {demo.edad_min}-{demo.edad_max}).")
 
-    # Lectura del analisis de sensibilidad del sabor.
-    if agg.sens_sabor_medias and agg.sens_aceptacion:
+    # Lectura del analisis de sensibilidad respecto de la calidad de cocina.
+    if agg.sens_calidades and agg.sens_aceptacion:
         a_min = agg.sens_aceptacion[0]
         a_max = agg.sens_aceptacion[-1]
         lineas.append(
-            f"Sensibilidad al Sabor: llevar el sabor general de {ESCALA_MIN} a {ESCALA_MAX} "
-            f"puntos hace escalar la aceptacion global de {a_min:.0f}% a {a_max:.0f}%, "
-            "confirmando que es la palanca comercial mas influyente.")
+            f"Sensibilidad a la Calidad: llevar la calidad de preparacion de {ESCALA_MIN} a "
+            f"{ESCALA_MAX} hace escalar la aceptacion global de {a_min:.0f}% a {a_max:.0f}%, "
+            "confirmando que es la palanca mas influyente sobre la aceptacion del producto.")
 
     lineas.append("")
     lineas.append("RECOMENDACIONES PARA NUTRICION:")

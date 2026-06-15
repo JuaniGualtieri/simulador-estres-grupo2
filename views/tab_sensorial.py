@@ -41,10 +41,10 @@ def _panel_control() -> bool:
               help="Gobierna la media de las distribuciones de cada atributo: a mejor "
                    "preparación, mejores notas y más respuestas 'Sí' esperadas.")
 
-    sub_seccion("2 · Experimento Monte Carlo")
-    st.select_slider("Iteraciones (eventos simulados)", options=[10, 30, 100, 500],
+    sub_seccion("2 · Experimento")
+    st.select_slider("Cantidad de experimentos", options=[10, 20, 30, 40, 50],
                      key=K_ITERS,
-                     help="Cantidad de eventos simulados para promediar la aceptación "
+                     help="Cantidad de experimentos simulados para promediar la aceptación "
                           "y construir el IC 95%.")
 
     st.info(
@@ -55,16 +55,16 @@ def _panel_control() -> bool:
         f"producto si su **sabor general** es ≥ {sens.UMBRAL_ACEPTACION}.")
 
     st.markdown("")
-    return st.button("►  Simular aceptación (Monte Carlo)", type="primary", width="stretch")
+    return st.button("►  Simular aceptación sensorial", type="primary", width="stretch")
 
 
 def _ejecutar() -> None:
     cfg = sens.SensorialConfig(calidad_cocina=int(st.session_state[K_CALIDAD]))
     n_iter = int(st.session_state[K_ITERS])
-    barra = st.progress(0.0, text=f"Corriendo {n_iter} eventos Monte Carlo...")
+    barra = st.progress(0.0, text=f"Corriendo {n_iter} experimentos...")
 
     def _avance(it: int, total: int) -> None:
-        barra.progress(it / total, text=f"Evento {it} / {total}")
+        barra.progress(it / total, text=f"Experimento {it} / {total}")
 
     agg = sens.correr_experimento(cfg, n_iteraciones=n_iter, progreso=_avance)
     barra.empty()
@@ -74,16 +74,16 @@ def _ejecutar() -> None:
 def _mostrar_kpis(agg: sens.SensorialAggregated) -> None:
     def ic(clave: str, dec: int = 1) -> str:
         if not agg.ic_disponible:
-            return "1 iteración · sin IC (requiere ≥2)"
+            return "1 experimento · sin IC (requiere ≥2)"
         inf, sup = agg.ic(clave)
         return f"IC95% [{inf:.{dec}f} - {sup:.{dec}f}]"
 
     if agg.ic_disponible:
         st.caption(f"Intervalos de Confianza del 95% calculados por **{agg.etiqueta_metodo_ic}** "
-                   f"sobre {agg.n_iteraciones} iteraciones.")
+                   f"sobre {agg.n_iteraciones} experimentos.")
     else:
-        st.warning("Ejecutaste **1 sola iteración**: no se puede estimar la variabilidad. "
-                   "Usá 10, 30, 100 o 500 iteraciones para el IC 95%.")
+        st.warning("Ejecutaste **1 solo experimento**: no se puede estimar la variabilidad. "
+                   "Usá 10, 20, 30, 40 o 50 experimentos para el IC 95%.")
 
     tasa = agg.media("tasa_aceptacion")
     color_tasa = (PALETA["verde"] if tasa >= 80 else
@@ -108,14 +108,16 @@ def _mostrar_kpis(agg: sens.SensorialAggregated) -> None:
 def _mostrar_demografia(agg: sens.SensorialAggregated) -> None:
     demo = sens.resumen_demografico(agg)
     sub_seccion("Perfil demográfico del panel")
-    cols = st.columns(3)
+    cols = st.columns(4)
     tarjeta_kpi(cols[0], "Comensales", f"{demo.n}",
                 f"Edad media {demo.edad_media:.0f} años", PALETA["verde"], "👥")
     tarjeta_kpi(cols[1], "Masculino", f"{demo.pct_masculino:.0f} %",
                 f"{demo.n_masculino} comensales", PALETA["slate"], "♂")
     tarjeta_kpi(cols[2], "Femenino", f"{demo.pct_femenino:.0f} %",
                 f"{demo.n_femenino} comensales", PALETA["naranja"], "♀")
-    st.plotly_chart(charts.figura_demografia(agg), width="stretch")
+    tarjeta_kpi(cols[3], "Otro", f"{demo.pct_otro:.0f} %",
+                f"{demo.n_otro} comensales", PALETA["verde"], "⚧")
+    st.plotly_chart(charts.figura_demografia(agg), width="stretch", config=charts.CHART_CONFIG)
 
 
 def _mostrar_comentarios(agg: sens.SensorialAggregated) -> None:
@@ -136,7 +138,7 @@ def render() -> None:
     """Punto de entrada de la Pestania 3, invocado desde main.py."""
     _inicializar_estado()
     st.markdown(
-        "<div class='bloque-titulo'><h1>Aceptación Sensorial (Monte Carlo)</h1>"
+        "<div class='bloque-titulo'><h1>Aceptación Sensorial</h1>"
         "<p>Simulación estocástica de la encuesta real de 12 preguntas: 64 comensales, "
         "8 escalas 1-10, 2 preguntas Sí/No, datos demográficos y análisis de "
         "sensibilidad del Sabor.</p></div>",
@@ -151,13 +153,13 @@ def render() -> None:
 
     with col_res:
         if K_RESULT not in st.session_state:
-            st.info("Ajustá la calidad de preparación y ejecutá la simulación Monte Carlo.")
+            st.info("Ajustá la calidad de preparación y ejecutá la simulación sensorial.")
             return
         agg = st.session_state[K_RESULT]
         cfg = agg.config
         st.subheader(
             f"Resultados · Calidad de cocina {cfg.calidad_cocina}/10 · "
-            f"{agg.n_iteraciones} iteraciones")
+            f"{agg.n_iteraciones} experimentos")
         _mostrar_kpis(agg)
         st.divider()
         _mostrar_demografia(agg)
@@ -165,9 +167,9 @@ def render() -> None:
         sub_seccion("Visualización interactiva")
         st.caption("Radar del perfil, matriz Sí/No 100% apilada y sensibilidad del Sabor "
                    "(zoom, paneo y leyenda interactiva).")
-        st.plotly_chart(charts.figura_perfil(agg), width="stretch")
-        st.plotly_chart(charts.figura_si_no(agg), width="stretch")
-        st.plotly_chart(charts.figura_sensibilidad(agg), width="stretch")
+        st.plotly_chart(charts.figura_perfil(agg), width="stretch", config=charts.CHART_CONFIG)
+        st.plotly_chart(charts.figura_si_no(agg), width="stretch", config=charts.CHART_CONFIG)
+        st.plotly_chart(charts.figura_sensibilidad(agg), width="stretch", config=charts.CHART_CONFIG)
         st.divider()
         _mostrar_comentarios(agg)
         with st.expander("📋 Diagnóstico sensorial y recomendaciones", expanded=True):

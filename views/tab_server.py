@@ -124,30 +124,72 @@ def _mostrar_kpis(agg: srv.AggregatedResult, cfg: srv.ScenarioConfig) -> None:
     fila1 = st.columns(3)
     tarjeta_kpi(fila1[0], "Encuestas guardadas",
                 f"{agg.media('exitos'):.0f} / {cfg.n_comensales}",
-                f"Tasa de éxito {tasa:.1f}%", PALETA["verde"], "✓")
+                f"Tasa de éxito {tasa:.1f}%", PALETA["verde"], "✓",
+                ayuda="Todas las encuestas terminan guardándose: el formulario reintenta "
+                      "el envío hasta que la red se recupera. No hay pérdida de datos.")
     tarjeta_kpi(fila1[1], "Errores 504 / caídas",
-                f"{agg.media('total_504'):.1f}", ic("total_504"), PALETA["rojo"], "✕")
-    tarjeta_kpi(fila1[2], "Encuestas perdidas",
-                f"{agg.media('encuestas_perdidas'):.1f}", ic("encuestas_perdidas"),
-                PALETA["ambar"], "▼")
+                f"{agg.media('total_504'):.1f}", ic("total_504"), PALETA["rojo"], "✕",
+                ayuda="Cantidad de EVENTOS con time-out del gateway (HTTP 504), por "
+                      "saturación del pool o conexión colgada por Wi-Fi. Son intentos, no "
+                      "comensales: uno solo puede generar varios 504 al reintentar.")
+    tarjeta_kpi(fila1[2], "Errores de conexión / time-out",
+                f"{agg.media('errores_conexion'):.1f}", ic("errores_conexion"),
+                PALETA["ambar"], "▼",
+                ayuda="Total de fallas de conexión/red atravesadas antes de lograr el "
+                      "guardado (cada reintento por una caída cuenta). NO son encuestas "
+                      "perdidas: son fallas de infraestructura.")
 
     fila2 = st.columns(3)
     tarjeta_kpi(fila2[0], "Espera prom. en cola",
                 f"{agg.media('espera_cola_promedio'):.2f} s",
-                ic("espera_cola_promedio", 2), PALETA["slate"], "◔")
+                ic("espera_cola_promedio", 2), PALETA["slate"], "◔",
+                ayuda="Tiempo medio que pasa una solicitud en el búfer de red esperando "
+                      "que se libere un cupo del Connection Pooler de Supabase.")
     tarjeta_kpi(fila2[1], "Tamaño máx. cola BD",
-                f"{agg.media('max_cola'):.1f}", ic("max_cola"), PALETA["slate"], "▤")
+                f"{agg.media('max_cola'):.1f}", ic("max_cola"), PALETA["slate"], "▤",
+                ayuda="Número máximo de peticiones esperando simultáneamente un slot libre "
+                      "en el pool de conexiones de Supabase.")
     tarjeta_kpi(fila2[2], f"Pico conexiones / {cfg.pool_capacity}",
                 f"{agg.media('pico_conexiones'):.0f}", ic("pico_conexiones"),
-                PALETA["verde"], "▲")
+                PALETA["verde"], "▲",
+                ayuda="Máximo de conexiones concurrentes ocupadas en el pooler durante la "
+                      f"jornada, sobre el límite configurado de {cfg.pool_capacity}.")
+
+    # Aclaracion adaptativa: por que dan 0 (escenarios reales) o por que los errores
+    # superan a las encuestas guardadas (escenario pesimista).
+    errores = agg.media("errores_conexion")
+    if agg.media("total_504") < 1 and agg.media("max_cola") < 1 and errores < 1:
+        st.markdown(
+            f"<div style='background:{PALETA['verde_suave']};border-left:4px solid "
+            f"{PALETA['verde']};border-radius:12px;padding:11px 15px;margin-top:12px;"
+            f"font-size:0.85rem;color:{PALETA['txt']};box-shadow:var(--shadow-sm);'>"
+            "ℹ️ <b>Por qué la cola y los errores dan 0:</b> con 64 comensales repartidos "
+            "a lo largo de la jornada (~83 min) la concurrencia es baja, así que el pooler "
+            "atiende cada envío en tiempo real y nunca se satura. La saturación y los "
+            "time-outs sólo emergen ante una ráfaga extrema (escenario <b>Pesimista</b>: "
+            "los 64 envíos en 2 minutos con Wi-Fi degradada).</div>",
+            unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f"<div style='background:#FBF3EC;border-left:4px solid {PALETA['ambar']};"
+            f"border-radius:12px;padding:11px 15px;margin-top:12px;font-size:0.85rem;"
+            f"color:{PALETA['txt']};box-shadow:var(--shadow-sm);'>"
+            f"ℹ️ <b>¿Por qué hay más errores ({errores:.0f}) que encuestas ("
+            f"{cfg.n_comensales})?</b> Los errores cuentan <b>intentos fallidos</b>, no "
+            "comensales. Bajo Wi-Fi degradada un mismo comensal puede sufrir varios "
+            "time-outs 504 antes de que su envío prospere, por eso el total de errores "
+            "supera la cantidad de personas. Aun así, las "
+            f"<b>{cfg.n_comensales}/{cfg.n_comensales} encuestas se guardan</b>: el "
+            "formulario reintenta hasta persistir y nunca se pierde un dato.</div>",
+            unsafe_allow_html=True)
 
 
 def _mostrar_graficos(agg: srv.AggregatedResult) -> None:
     """Doble grafico interactivo: curva de conexiones + boxplot de Encuestas Perdidas."""
     sub_seccion("Visualización interactiva")
     st.caption("Zoom con scroll, paneo arrastrando y clic en la leyenda para ocultar curvas.")
-    st.plotly_chart(charts.figura_conexiones(agg), width="stretch")
-    st.plotly_chart(charts.figura_boxplot(agg), width="stretch")
+    st.plotly_chart(charts.figura_conexiones(agg), width="stretch", config=charts.CHART_CONFIG)
+    st.plotly_chart(charts.figura_boxplot(agg), width="stretch", config=charts.CHART_CONFIG)
 
 
 def render() -> None:

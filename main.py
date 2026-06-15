@@ -44,13 +44,29 @@ inyectar_css()
 def _panel_reporte() -> None:
     """Barra lateral: ficha del proyecto y compilacion/descarga del reporte PDF."""
     with st.sidebar:
-        st.markdown(f"### Simulador Intercátedra")
-        st.caption("TPI Intercatedra · Grupo 2 · Modelos y Simulacion")
         st.markdown(
             f"""
-            <div style="background:{PALETA['verde_suave']};border-radius:12px;
-            padding:13px 15px;font-size:0.82rem;color:{PALETA['txt_suave']};
-            border:1px solid {PALETA['borde']};">
+            <div style="display:flex;align-items:center;gap:11px;margin-bottom:2px;">
+              <div style="width:38px;height:38px;border-radius:11px;flex:0 0 auto;
+                   background:{PALETA['verde']};display:flex;align-items:center;
+                   justify-content:center;font-size:1.2rem;
+                   box-shadow:0 8px 18px -8px rgba(76,118,97,0.8);">🥧</div>
+              <div style="line-height:1.15;">
+                <div style="font-weight:800;font-size:1.05rem;color:{PALETA['txt']};">
+                   Simulador Intercátedra</div>
+                <div style="font-size:0.74rem;color:{PALETA['txt_suave']};
+                   text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">
+                   Grupo 2 · Modelos y Simulación</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div style="background:{PALETA['verde_suave']};border-radius:14px;
+            padding:14px 16px;font-size:0.82rem;color:{PALETA['txt_suave']};
+            border:1px solid {PALETA['borde']};margin-top:12px;
+            box-shadow:0 1px 2px rgba(16,24,40,0.04);">
             <b style="color:{PALETA['verde']};">Sistema real modelado · Caso Real</b><br>
             · 64 comensales · 11/06/2026 · jornada de 83,3 min<br>
             · 60 conexiones (plan gratuito Supabase)<br>
@@ -109,7 +125,7 @@ def main() -> None:
     tab1, tab2, tab3 = st.tabs([
         "🌐  Infraestructura Web & Concurrencia",
         "🍳  Cadena de Produccion & Abastecimiento",
-        "🥗  Aceptacion Sensorial (Monte Carlo)",
+        "🥗  Aceptacion Sensorial",
     ])
     with tab1:
         tab_server.render()

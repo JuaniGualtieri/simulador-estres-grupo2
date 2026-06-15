@@ -27,10 +27,10 @@ from typing import List, Optional
 from sim.server_sim import (AggregatedResult, FILL_TIME_MAX, FILL_TIME_MIN,
                             GATEWAY_TIMEOUT, ScenarioConfig)
 from sim.server_sim import generar_diagnostico as diagnostico_servidor
-from sim.production_sim import (DEMANDA_TARTALETAS, ProductionAggregated,
-                               STOCK_INICIAL_LOTES, TARTALETAS_POR_LOTE,
+from sim.production_sim import (DEMANDA_TARTALETAS, DURACION_JORNADA_MIN,
+                               ProductionAggregated, TARTALETAS_POR_LOTE,
                                TIEMPO_GRATINADO, TIEMPO_HORNEADO_MASA, TIEMPO_RELLENO,
-                               VENTANA_ARRIBOS_MIN)
+                               UMBRAL_REORDEN)
 from sim.production_sim import generar_diagnostico as diagnostico_produccion
 from sim.sensorial_sim import (ATRIBUTOS_BOOL, ATRIBUTOS_SLIDER, ETIQUETAS,
                                N_COMENSALES as SENS_N_COMENSALES,
@@ -252,7 +252,7 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
         ["   - 504 por saturacion del pool", _ic_txt(agg_server, "err_504_pool")],
         ["   - 504 por Wi-Fi colgada", _ic_txt(agg_server, "err_504_latencia")],
         ["Errores de red", _ic_txt(agg_server, "err_red")],
-        ["Encuestas perdidas (tras reintentos)", _ic_txt(agg_server, "encuestas_perdidas")],
+        ["Errores de conexion / time-outs (total)", _ic_txt(agg_server, "errores_conexion")],
         ["Espera promedio en cola (s)", _ic_txt(agg_server, "espera_cola_promedio", 3)],
         ["Tamanio maximo de cola de BD", _ic_txt(agg_server, "max_cola")],
         ["Pico de conexiones concurrentes",
@@ -275,7 +275,7 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     _fig(png_conex)
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph(
-        "Figura 2. <i>Distribucion de Encuestas Perdidas sobre las N replicas (boxplot).</i>",
+        "Figura 2. <i>Distribucion de Errores de Conexion / time-outs sobre las N replicas (boxplot).</i>",
         st_body))
     story.append(Spacer(1, 0.2 * cm))
     _fig(png_box)
@@ -288,44 +288,47 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
     story.append(Paragraph(
         "Seccion 2. Viabilidad organizacional de la cadena de produccion", st_h2))
     story.append(Paragraph(
-        "Se simulo la cocina de la Planta Piloto como una cadena MULTI-ETAPA de tiempos "
-        f"fijos: Etapa 1 Coccion del Relleno ({TIEMPO_RELLENO:.0f} min), Etapa 2 Horneado "
-        f"de la Masa ({TIEMPO_HORNEADO_MASA:.0f} min) y Etapa 3 Armado y Gratinado del "
-        f"Queso ({TIEMPO_GRATINADO:.0f} min, con el armado solapado dentro del gratinado), "
-        "con operarios y horno como recursos limitados. Cada tanda fija de "
-        f"{TARTALETAS_POR_LOTE} tartaletas ENTERAS repone el mostrador de despacho, del que "
-        f"los {agg_prod.config.n_comensales} comensales retiran una unidad ENTERA cada uno "
-        "(regla de despacho entero) segun la misma distribucion exponencial de arribos de "
-        "la Seccion 1. Para cubrir los 64 pedidos se requieren ceil(64/8) = 8 tandas; el "
-        "cruce entre la tasa de produccion y el ritmo de consumo determina la viabilidad "
-        "operativa y los tiempos de espera en la fila de despacho.", st_body))
+        "Se simulo el stand de feria como una cadena MULTI-ETAPA con reposicion por demanda: "
+        f"Etapa 1 Coccion del Relleno (~{TIEMPO_RELLENO:.0f} min), Etapa 2 Horneado de la "
+        f"Masa (~{TIEMPO_HORNEADO_MASA:.0f} min) y Etapa 3 Armado y Gratinado del Queso "
+        f"(~{TIEMPO_GRATINADO:.0f} min, con el armado solapado dentro del gratinado), con "
+        "operarios y horno como recursos limitados. El stand ABRE con un stock de "
+        f"pre-produccion de {cfg_prod.stock_inicial_lotes} bandeja(s) y, cuando las "
+        f"tartaletas listas caen al punto de reorden ({UMBRAL_REORDEN} unidades), hornea una "
+        f"nueva bandeja de {TARTALETAS_POR_LOTE}. Los {agg_prod.config.n_comensales} "
+        "comensales compran una tartaleta ENTERA cada uno (regla de despacho entero) segun "
+        "las marcas de tiempo REALES del stand (planilla horas.xlsx). El cruce entre la tasa "
+        "de produccion y el ritmo de compra determina la viabilidad operativa y los tiempos "
+        "de espera en la fila.", st_body))
     story.append(Spacer(1, 0.3 * cm))
 
     # 2.a) Tabla APA de rendimiento de stock.
     story.append(Paragraph(
         "Tabla 2. <i>Rendimiento de la cadena de produccion (promedio de replicas).</i>",
         st_body))
-    tandas_obj = (DEMANDA_TARTALETAS + TARTALETAS_POR_LOTE - 1) // TARTALETAS_POR_LOTE
     datos_prod = [
         ["Indicador", "Promedio [IC 95%]"],
         ["Operarios de cocina", f"{cfg_prod.operarios}"],
-        ["Capacidad del horno (tandas simultaneas)", f"{cfg_prod.horno_slots}"],
-        ["Comensales / ventana de arribos",
-         f"{cfg_prod.n_comensales} en {VENTANA_ARRIBOS_MIN:.1f} min"],
+        ["Capacidad del horno (bandejas simultaneas)", f"{cfg_prod.horno_slots}"],
+        ["Stock inicial de pre-produccion",
+         f"{cfg_prod.stock_inicial_lotes} bandeja(s) = {cfg_prod.stock_inicial_unidades} tartaletas"],
+        ["Comensales / jornada real",
+         f"{cfg_prod.n_comensales} en {DURACION_JORNADA_MIN:.0f} min (horarios reales)"],
         ["Regla de despacho",
          f"1 tartaleta ENTERA por comensal ({DEMANDA_TARTALETAS} en total)"],
-        ["Tanda fija de horneado", f"{TARTALETAS_POR_LOTE} tartaletas enteras"],
-        ["Etapa 1 - Coccion del Relleno", f"{TIEMPO_RELLENO:.0f} min fijos (operario)"],
-        ["Etapa 2 - Horneado de la Masa", f"{TIEMPO_HORNEADO_MASA:.0f} min fijos (horno)"],
+        ["Bandeja de horneado", f"{TARTALETAS_POR_LOTE} tartaletas enteras"],
+        ["Punto de reorden", f"{UMBRAL_REORDEN} tartaletas listas"],
+        ["Etapa 1 - Coccion del Relleno", f"~{TIEMPO_RELLENO:.0f} min (operario)"],
+        ["Etapa 2 - Horneado de la Masa", f"~{TIEMPO_HORNEADO_MASA:.0f} min (horno)"],
         ["Etapa 3 - Armado y Gratinado",
-         f"{TIEMPO_GRATINADO:.0f} min fijos (horno; armado solapado)"],
-        ["Tandas requeridas (ceil 64/8)", f"{tandas_obj}"],
-        ["Total de tartaletas producidas", _ic_txt(agg_prod, "tartaletas_producidas", 0)],
-        ["Tandas producidas", _ic_txt(agg_prod, "lotes_producidos")],
-        ["Tiempo promedio de ciclo de una tanda (min)",
+         f"~{TIEMPO_GRATINADO:.0f} min (horno; armado solapado)"],
+        ["Tartaletas horneadas en vivo", _ic_txt(agg_prod, "tartaletas_producidas", 0)],
+        ["Bandejas horneadas en vivo", _ic_txt(agg_prod, "lotes_producidos")],
+        ["Tiempo promedio de ciclo de una bandeja (min)",
          _ic_txt(agg_prod, "tiempo_fab_promedio")],
-        ["Espera maxima en la fila de despacho (min)",
+        ["Espera maxima en la fila (min)",
          _ic_txt(agg_prod, "espera_maxima")],
+        ["Espera promedio en la fila (min)", _ic_txt(agg_prod, "espera_promedio")],
         ["Comensales que esperaron en la fila", _ic_txt(agg_prod, "comensales_en_espera")],
         ["Stock remanente al cierre (tartaletas)", _ic_txt(agg_prod, "stock_remanente", 0)],
     ]
@@ -397,6 +400,7 @@ def generar_reporte_pdf(agg_server: AggregatedResult, cfg_server: ScenarioConfig
             ["Comensales del panel", f"{demo.n}"],
             ["Sexo masculino", f"{demo.n_masculino} ({demo.pct_masculino:.0f} %)"],
             ["Sexo femenino", f"{demo.n_femenino} ({demo.pct_femenino:.0f} %)"],
+            ["Sexo otro", f"{demo.n_otro} ({demo.pct_otro:.0f} %)"],
             ["Edad media (anios)", f"{demo.edad_media:.1f}"],
             ["Rango de edades (anios)", f"{demo.edad_min} - {demo.edad_max}"],
         ]

@@ -23,6 +23,7 @@ from views.theme import PALETA, bloque_validacion, sub_seccion, tarjeta_kpi
 # Claves de session_state usadas por esta pestania (persistencia multivariable, req. 7).
 K_OPERARIOS = "prod_operarios"
 K_HORNO = "prod_horno"
+K_STOCK_INI = "prod_stock_ini"
 K_REPLICAS = "prod_replicas"
 K_COSTO_MP = "prod_costo_mp"
 K_PRECIO = "prod_precio"
@@ -31,9 +32,15 @@ K_INVERSION = "prod_inversion"
 K_RESULT = "prod_result"   # ProductionAggregated
 
 
+def _pesos(valor: float, dec: int = 0) -> str:
+    """Formatea un monto en pesos con separador de miles con punto (estilo AR)."""
+    return "$ " + f"{valor:,.{dec}f}".replace(",", ".")
+
+
 def _inicializar_estado() -> None:
     st.session_state.setdefault(K_OPERARIOS, prod.SLIDER_DEFAULTS["operarios"])
     st.session_state.setdefault(K_HORNO, prod.SLIDER_DEFAULTS["horno"])
+    st.session_state.setdefault(K_STOCK_INI, prod.SLIDER_DEFAULTS["stock_inicial_lotes"])
     st.session_state.setdefault(K_REPLICAS, prod.N_REPLICAS_DEFAULT)
     st.session_state.setdefault(K_COSTO_MP, prod.SLIDER_DEFAULTS["costo_mp_lote"])
     st.session_state.setdefault(K_PRECIO, prod.SLIDER_DEFAULTS["precio_venta"])
@@ -46,9 +53,13 @@ def _panel_control() -> bool:
     sub_seccion("1 · Recursos de cocina")
     st.slider("Cantidad de operarios", min_value=1, max_value=5, step=1, key=K_OPERARIOS,
               help="Operarios para la Etapa 1 (cocción del relleno, 30 min).")
-    st.slider("Capacidad del horno (tandas simultáneas)", min_value=1, max_value=4, step=1,
+    st.slider("Capacidad del horno (bandejas simultáneas)", min_value=1, max_value=4, step=1,
               key=K_HORNO, help="Ranuras del horno para la Etapa 2 (horneado) y la "
                                 "Etapa 3 (gratinado) en paralelo.")
+    st.slider("Stock inicial de pre-producción (bandejas)", min_value=0, max_value=4, step=1,
+              key=K_STOCK_INI,
+              help="Bandejas de 8 tartaletas ya horneadas y calientes al abrir el stand "
+                   "(08:15). Más pre-producción amortigua el pico inicial de compras.")
 
     sub_seccion("2 · Parámetros económicos (escenario de venta)")
     st.caption("Modela el emprendimiento: rentabilidad por jornada y recupero de inversión.")
@@ -70,16 +81,16 @@ def _panel_control() -> bool:
                      key=K_REPLICAS,
                      help="Repeticiones independientes para promediar los KPIs con IC 95%.")
 
-    tandas = (prod.DEMANDA_TARTALETAS + prod.TARTALETAS_POR_LOTE - 1) // prod.TARTALETAS_POR_LOTE
     st.info(
-        f"**Tanda fija de {prod.TARTALETAS_POR_LOTE} tartaletas enteras** · tiempos FIJOS → "
-        f"Etapa 1 Cocción del Relleno **{prod.TIEMPO_RELLENO:.0f} min** · "
-        f"Etapa 2 Horneado de la Masa **{prod.TIEMPO_HORNEADO_MASA:.0f} min** · "
-        f"Etapa 3 Armado y Gratinado **{prod.TIEMPO_GRATINADO:.0f} min** (el armado va "
-        f"solapado dentro del gratinado final). **Despacho entero:** {prod.N_COMENSALES} "
-        f"comensales = {prod.DEMANDA_TARTALETAS} tartaletas → "
-        f"ceil({prod.DEMANDA_TARTALETAS}/{prod.TARTALETAS_POR_LOTE}) = **{tandas} tandas** de "
-        f"horneado. Arribos exponenciales (media 1,32 min, igual que la Pestaña 1).")
+        f"**Modelo de stand de feria.** Abre con el stock de pre-producción elegido y "
+        f"**repone por demanda**: cuando las tartaletas listas caen a "
+        f"**{prod.UMBRAL_REORDEN}**, la cocina hornea otra bandeja de "
+        f"**{prod.TARTALETAS_POR_LOTE}**. Cada bandeja recorre Etapa 1 Cocción del Relleno "
+        f"**~{prod.TIEMPO_RELLENO:.0f}′** (operario) · Etapa 2 Horneado de la Masa "
+        f"**~{prod.TIEMPO_HORNEADO_MASA:.0f}′** (horno) · Etapa 3 Armado y Gratinado "
+        f"**~{prod.TIEMPO_GRATINADO:.0f}′** (horno). Los **{prod.N_COMENSALES} comensales** "
+        f"compran 1 tartaleta entera c/u según los **horarios reales del stand** "
+        f"(11/06/2026, jornada de {prod.DURACION_JORNADA_MIN:.0f} min).")
 
     st.markdown("")
     return st.button("►  Simular producción", type="primary", width="stretch")
@@ -89,6 +100,7 @@ def _ejecutar() -> None:
     cfg = prod.ProductionConfig(
         operarios=int(st.session_state[K_OPERARIOS]),
         horno_slots=int(st.session_state[K_HORNO]),
+        stock_inicial_lotes=int(st.session_state[K_STOCK_INI]),
         costo_mp_lote=float(st.session_state[K_COSTO_MP]),
         precio_venta_unidad=float(st.session_state[K_PRECIO]),
         costo_operario_jornada=float(st.session_state[K_COSTO_OP]),
@@ -121,38 +133,44 @@ def _mostrar_kpis(agg: prod.ProductionAggregated) -> None:
                    "ni construir Intervalos de Confianza. Usá 10, 20 o 30 réplicas.")
 
     fila1 = st.columns(2)
-    tarjeta_kpi(fila1[0], "Tartaletas enteras producidas",
-                f"{agg.media('tartaletas_producidas'):.0f}",
-                f"{agg.media('lotes_producidos'):.0f} tandas de "
-                f"{prod.TARTALETAS_POR_LOTE} · {ic('tartaletas_producidas')}",
+    tarjeta_kpi(fila1[0], "Tartaletas vendidas",
+                f"{agg.media('unidades_vendidas'):.0f} / {agg.config.n_comensales}",
+                f"{agg.media('tartaletas_producidas'):.0f} horneadas en vivo + "
+                f"{agg.config.stock_inicial_unidades} de pre-producción",
                 PALETA["verde"], "▣")
-    tarjeta_kpi(fila1[1], "Tiempo prom. ciclo de tanda",
+    tarjeta_kpi(fila1[1], "Tiempo prom. ciclo de bandeja",
                 f"{agg.media('tiempo_fab_promedio'):.1f} min",
                 ic("tiempo_fab_promedio"), PALETA["slate"], "◔")
 
     fila2 = st.columns(2)
-    color_espera = PALETA["rojo"] if agg.media("espera_maxima") > 5 else PALETA["ambar"]
-    tarjeta_kpi(fila2[0], "Espera máxima en fila de despacho",
+    color_espera = PALETA["rojo"] if agg.media("espera_maxima") > 15 else (
+        PALETA["ambar"] if agg.media("espera_maxima") > 5 else PALETA["verde"])
+    tarjeta_kpi(fila2[0], "Espera máxima en la fila",
                 f"{agg.media('espera_maxima'):.1f} min",
-                ic("espera_maxima"), color_espera, "▼")
-    tarjeta_kpi(fila2[1], "Stock remanente al cierre",
-                f"{agg.media('stock_remanente'):.0f}", ic("stock_remanente"),
-                PALETA["verde"], "▲")
+                f"promedio {agg.media('espera_promedio'):.1f} min · {ic('espera_maxima')}",
+                color_espera, "▼")
+    tarjeta_kpi(fila2[1], "Comensales que esperaron",
+                f"{agg.media('comensales_en_espera'):.0f} / {agg.config.n_comensales}",
+                f"stock remanente al cierre: {agg.media('stock_remanente'):.0f}",
+                PALETA["slate"], "▤")
 
     # --- KPIs economico-financieros (req. 3) ---
     sub_seccion("Viabilidad económica (escenario de venta)")
     fila3 = st.columns(2)
     rent = agg.media("rentabilidad")
+    ingresos = agg.media("ingresos")
+    costo_total = agg.media("costo_total")
     color_rent = PALETA["verde"] if rent > 0 else PALETA["rojo"]
-    tarjeta_kpi(fila3[0], "Rentabilidad proyectada / jornada",
-                f"$ {rent:,.0f}", ic("rentabilidad", 0), color_rent,
-                "▲" if rent > 0 else "▼")
+    tarjeta_kpi(fila3[0], "Rentabilidad neta / jornada",
+                _pesos(rent),
+                f"Ingresos {_pesos(ingresos)} − Costos {_pesos(costo_total)}",
+                color_rent, "▲" if rent > 0 else "▼")
     payback = agg.payback_jornadas
     if payback == float("inf"):
         valor_pb, sub_pb, color_pb = "No recupera", "jornada no rentable", PALETA["rojo"]
     else:
         valor_pb = f"{payback:.1f} jornadas"
-        sub_pb = f"para recuperar $ {agg.config.inversion_inicial:,.0f}"
+        sub_pb = f"para recuperar {_pesos(agg.config.inversion_inicial)}"
         color_pb = PALETA["ambar"]
     tarjeta_kpi(fila3[1], "Recupero de inversión (payback)",
                 valor_pb, sub_pb, color_pb, "◷")
@@ -163,9 +181,9 @@ def render() -> None:
     _inicializar_estado()
     st.markdown(
         "<div class='bloque-titulo'><h1>Cadena de Producción &amp; Abastecimiento</h1>"
-        "<p>Modelo multi-etapa de la cocina de la Planta Piloto: tandas fijas de 8 "
-        "tartaletas (relleno 30′ · masa 15′ · gratinado 10′) contra el ritmo de consumo "
-        "entero de los 64 comensales.</p></div>",
+        "<p>Stand de feria con reposición por demanda: abre con stock de pre-producción y "
+        "hornea bandejas de 8 tartaletas (relleno 30′ · masa 15′ · gratinado 10′) a medida "
+        "que los 64 comensales compran según los horarios reales del evento.</p></div>",
         unsafe_allow_html=True)
 
     col_ctrl, col_res = st.columns([1, 2.4], gap="large")
@@ -183,12 +201,13 @@ def render() -> None:
         cfg = agg.config
         st.subheader(
             f"Resultados · {cfg.operarios} operario/s · horno x{cfg.horno_slots} · "
-            f"{agg.n_replicas} réplica/s")
+            f"apertura {cfg.stock_inicial_lotes} lote/s · {agg.n_replicas} réplica/s")
         _mostrar_kpis(agg)
         st.divider()
-        sub_seccion("Evolución temporal del stock de despacho")
-        st.caption("Zoom con scroll, paneo arrastrando y clic en la leyenda para ocultar series.")
-        st.plotly_chart(charts.figura_stock(agg), width="stretch")
+        sub_seccion("Evolución del stock en el mostrador del stand")
+        st.caption("Escalera del inventario: sube +8 al salir una bandeja del horno y baja "
+                   "−1 por cada compra. Zoom con scroll, paneo arrastrando.")
+        st.plotly_chart(charts.figura_stock(agg), width="stretch", config=charts.CHART_CONFIG)
         with st.expander("📋 Diagnóstico de viabilidad organizacional", expanded=True):
             st.code(prod.generar_diagnostico(agg), language=None)
 

@@ -6,53 +6,44 @@
  Asignatura: Modelos y Simulacion - 4to Anio - Ingenieria en Sistemas de Informacion
 ================================================================================
 
-OBJETIVO DEL MODELO 2
----------------------
-Modelar mediante SIMULACION DE EVENTOS DISCRETOS (SimPy) la cadena de suministro y
-fabricacion fisica de las tartaletas vegetales en la cocina de la Planta Piloto,
-cruzando la TASA DE PRODUCCION contra el RITMO DE CONSUMO de los comensales para
-determinar la viabilidad organizacional y los cuellos de botella de stock.
+OBJETIVO DEL MODELO 2 (CADENA DE PRODUCCION DE UNA FERIA / STAND REAL)
+---------------------------------------------------------------------
+Modelar mediante SIMULACION DE EVENTOS DISCRETOS (SimPy) el funcionamiento REAL de
+un stand de feria que vende la tartaleta vegetal: la cocina abre con un STOCK INICIAL
+de pre-produccion (algunas bandejas ya horneadas y calientes) y va REPONIENDO por
+demanda a medida que los comensales compran. NO se hornean 64 tartaletas de golpe:
+se sigue una politica de reorden por punto critico, como en un local de verdad.
 
 DEFINICION TEORICA
 ------------------
-* ENTIDADES ........... Tandas de horneado (cada tanda = lote FIJO de 8 tartaletas
-                        ENTERAS) que recorren la cadena de produccion.
-* RECURSOS ............ Operarios de cocina disponibles (simpy.Resource) y Capacidad
-                        fisica del Horno = tandas maximas concurrentes (simpy.Resource).
-* VARIABLES DE ESTADO   Stock actual de tartaletas enteras en el mostrador de despacho
-                        (simpy.Container), estado del horno (ranuras ocupadas) y
-                        comensales en la fila de despacho (espera por alimento).
+* ENTIDADES ........... Comensales (compran 1 tartaleta ENTERA c/u) y Ordenes de
+                        horneado (cada lote = 8 tartaletas ENTERAS).
+* RECURSOS ............ Operarios de cocina (simpy.Resource) y ranuras del Horno
+                        (simpy.Resource = lotes maximos en paralelo).
+* VARIABLE DE ESTADO .. Stock de tartaletas listas en el mostrador (simpy.Container)
+                        + comensales en la fila de espera (bloqueo de Container.get).
 
-FLUJO DEL PROCESO OPERATIVO (LOGICA SimPy) - MODELO MULTI-ETAPA DEL CASO REAL
------------------------------------------------------------------------------
-Cada TANDA de 8 tartaletas enteras recorre tres etapas de tiempos FIJOS medidos en la
-Planta Piloto (sin variabilidad: son tiempos de receta controlados por el operario):
-* Etapa 1 (Coccion del Relleno) ... 30 min FIJOS. Requiere un operario que cocina el
-                                    relleno (pollo, alubia y vegetales) en la hornalla.
-* Etapa 2 (Horneado de la Masa) ... 15 min FIJOS. Requiere una ranura libre del Horno.
-* Etapa 3 (Armado y Gratinado) .... 10 min FIJOS. Requiere el Horno (gratinadora). El
-                                    ARMADO de la tartaleta esta SOLAPADO dentro de estos
-                                    10 min de gratinado final del queso, no se modela
-                                    como un tiempo aparte.
-Cada tanda terminada incorpora 8 tartaletas ENTERAS al mostrador. Para cubrir la
-demanda entera de 64 comensales se encolan ceil(64 / 8) = 8 tandas de horneado.
+FLUJO REAL (POLITICA DE REORDEN POR PUNTO CRITICO)
+--------------------------------------------------
+1. La jornada ABRE (t = 0, 08:15) con `stock_inicial_lotes` bandejas ya listas
+   (por defecto 2 lotes = 16 tartaletas calientes de pre-produccion).
+2. Los 64 comensales ARRIBAN segun las marcas de tiempo REALES del stand
+   (sim/arribos_reales.py, derivadas de horas.xlsx). Cada uno retira 1 tartaleta
+   ENTERA: si hay stock, su espera es 0; si no, entra a la fila hasta que salga
+   una nueva bandeja del horno.
+3. Cuando la POSICION DE INVENTARIO (stock + lo que ya se esta horneando) cae a/por
+   debajo del PUNTO DE REORDEN (8 unidades), la cocina dispara una nueva orden de
+   horneado de un lote de 8, siempre que no se haya comprometido ya toda la demanda.
+
+Cada lote recorre tres etapas de la Planta Piloto (tiempos de receta con una leve
+variabilidad operativa realista, lo que ademas da dispersion entre replicas para el
+IC 95%): Etapa 1 Coccion del Relleno ~30 min (operario) -> Etapa 2 Horneado de la
+Masa ~15 min (horno) -> Etapa 3 Armado y Gratinado ~10 min (horno, armado solapado).
 
 REGLA DE DESPACHO ENTERO
 ------------------------
-Cada comensal consume estrictamente UNA (1) tartaleta ENTERA. No existe fraccionamiento
-en mitades ni cuartos: la demanda total es de 64 tartaletas completas para los 64
-comensales (1 a 1).
-
-ACOPLAMIENTO DINAMICO INTERCATEDRA (CONSUMO DE STOCK)
------------------------------------------------------
-La llegada de los comensales usa la MISMA distribucion EXPONENCIAL de arribos de la
-Pestania 1 (media 1,32 min entre llegadas). Al llegar, cada comensal intenta retirar
-una tartaleta ENTERA lista del mostrador de despacho:
-  - Si hay stock disponible, el stock disminuye en 1 y el comensal pasa a responder la
-    encuesta web (sale del sistema de cocina).
-  - Si el stock es 0, el comensal entra a la "Fila de Despacho" (modelada con el bloqueo
-    nativo de simpy.Container.get) reteniendo su tiempo hasta que una tanda finalice la
-    Etapa 3 y reponga el mostrador.
+Cada comensal consume estrictamente UNA (1) tartaleta ENTERA (sin fraccionar): la
+demanda total es de 64 tartaletas completas para los 64 comensales.
 ================================================================================
 """
 
@@ -66,27 +57,28 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 import simpy
 
+from sim.arribos_reales import ARRIBOS_MIN, DURACION_JORNADA_MIN, interarribos_min
 from sim.estadistica import cuantil_ic95, intervalo_confianza_95
 
 # ---------------------------------------------------------------------------
 # PARAMETROS DEL MODELO DE PRODUCCION (tiempos en MINUTOS)
 # ---------------------------------------------------------------------------
-# Acoplamiento con el Caso Real (Pestania 1): 64 comensales reales que arriban segun
-# una EXPONENCIAL de media 1,32 min (79,3 s). Como tasa_arribo_media = ventana / n,
-# fijamos la ventana en 1,32 min x 64 para reproducir esa media exacta entre llegadas.
-N_COMENSALES = 64              # Comensales reales del stand (cada uno consume 1 tartaleta ENTERA).
-MEDIA_ARRIBO_MIN = 79.3 / 60.0  # 1,32 min: media de la Exponencial de arribos del Caso Real.
-VENTANA_ARRIBOS_MIN = MEDIA_ARRIBO_MIN * N_COMENSALES  # Para que E(X) = ventana/n = 1,32 min.
+N_COMENSALES = len(ARRIBOS_MIN)     # 64 comensales reales (cada uno compra 1 tartaleta ENTERA).
+MEDIA_ARRIBO_MIN = 79.3 / 60.0      # 1,32 min: media TEORICA de la Exponencial de arribos (V&V).
 DEMANDA_TARTALETAS = N_COMENSALES   # Regla de despacho ENTERO: 64 tartaletas completas para 64 comensales.
 
-# --- Lote/tanda FIJO de produccion y tiempos FIJOS de las tres etapas (medidos en planta) ---
-TARTALETAS_POR_LOTE = 8        # Tanda FIJA de 8 tartaletas ENTERAS por ciclo de horneado.
-TIEMPO_RELLENO = 30.0          # Etapa 1: Coccion del Relleno = 30 min FIJOS (requiere operario).
-TIEMPO_HORNEADO_MASA = 15.0    # Etapa 2: Horneado de la Masa = 15 min FIJOS (requiere horno).
-TIEMPO_GRATINADO = 10.0        # Etapa 3: Armado y Gratinado del Queso = 10 min FIJOS (armado solapado dentro).
+# --- Lote/tanda FIJO y tiempos de las tres etapas (medias de la Planta Piloto) ---
+TARTALETAS_POR_LOTE = 8        # Cada bandeja/lote rinde 8 tartaletas ENTERAS.
+TIEMPO_RELLENO = 30.0          # Etapa 1: Coccion del Relleno ~30 min (requiere operario).
+TIEMPO_HORNEADO_MASA = 15.0    # Etapa 2: Horneado de la Masa ~15 min (requiere horno).
+TIEMPO_GRATINADO = 10.0        # Etapa 3: Armado y Gratinado ~10 min (horno; armado solapado dentro).
 TIEMPO_CICLO_LOTE = (TIEMPO_RELLENO + TIEMPO_HORNEADO_MASA
-                     + TIEMPO_GRATINADO)  # 55 min: camino critico de UNA tanda sin contienda de recursos.
-STOCK_INICIAL_LOTES = 0        # Sin pre-coccion: las 64 tartaletas salen integras de la jornada.
+                     + TIEMPO_GRATINADO)  # 55 min: camino critico de UNA bandeja sin contienda.
+SIGMA_ETAPA_PCT = 0.07         # Variabilidad operativa (+/-7%) de cada etapa: realismo + dispersion para IC.
+
+# --- Politica de inventario del stand (reorden por punto critico) ---
+STOCK_INICIAL_LOTES = 2        # Pre-produccion al abrir: 2 lotes = 16 tartaletas calientes.
+UMBRAL_REORDEN = TARTALETAS_POR_LOTE  # Punto de reorden: al caer a <=8 listas, se hornea otra bandeja.
 
 SEED_BASE = 2026             # Semilla base (anio del evento) para reproducibilidad.
 N_REPLICAS_DEFAULT = 20      # Replicas para estabilizar los KPIs escalares.
@@ -94,18 +86,16 @@ N_REPLICAS_DEFAULT = 20      # Replicas para estabilizar los KPIs escalares.
 # ---------------------------------------------------------------------------
 # PARAMETROS ECONOMICO-FINANCIEROS (escenario de emprendimiento, en pesos ARS)
 # ---------------------------------------------------------------------------
-# Modelan la pregunta de Nutricion de la Parte 2 del TPI: "si el producto se
-# comercializara, cuanto se gana por jornada y en cuantas jornadas se recupera la
-# inversion inicial". Son valores POR DEFECTO, totalmente parametrizables por la UI.
-COSTO_MP_LOTE = 7200.0          # Costo de materia prima por tanda de 8 unidades (~$900 c/u).
+COSTO_MP_LOTE = 7200.0          # Costo de materia prima por bandeja de 8 unidades (~$900 c/u).
 PRECIO_VENTA_UNIDAD = 3000.0    # Precio de venta sugerido por tartaleta al publico.
 COSTO_OPERARIO_JORNADA = 15000.0  # Costo fijo por operario por jornada de produccion.
 INVERSION_INICIAL = 500000.0    # Inversion inicial en equipamiento de cocina (horno, mesada, utensilios).
 
 # Valores por defecto de los sliders/campos de la Pestania 2.
 SLIDER_DEFAULTS = {
-    "operarios": 2,    # Rango [1 - 5].
-    "horno": 2,        # Rango [1 - 4] lotes simultaneos.
+    "operarios": 2,             # Rango [1 - 5].
+    "horno": 2,                 # Rango [1 - 4] lotes simultaneos.
+    "stock_inicial_lotes": STOCK_INICIAL_LOTES,  # Rango [0 - 4] bandejas pre-horneadas.
     # Parametros economicos editables (number_input).
     "costo_mp_lote": COSTO_MP_LOTE,
     "precio_venta": PRECIO_VENTA_UNIDAD,
@@ -119,8 +109,8 @@ class ProductionConfig:
     """Parametros configurables de la cadena de produccion (vienen de los sliders)."""
     operarios: int          # Cantidad de operarios de cocina (SLIDER [1-5]).
     horno_slots: int        # Capacidad del horno en lotes simultaneos (SLIDER [1-4]).
+    stock_inicial_lotes: int = STOCK_INICIAL_LOTES  # Bandejas de pre-produccion al abrir (SLIDER [0-4]).
     n_comensales: int = N_COMENSALES
-    ventana_arribos_min: float = VENTANA_ARRIBOS_MIN
     # --- Parametros economico-financieros (escenario de emprendimiento) ---
     costo_mp_lote: float = COSTO_MP_LOTE          # Costo materia prima por lote.
     precio_venta_unidad: float = PRECIO_VENTA_UNIDAD  # Precio de venta por tartaleta.
@@ -128,9 +118,13 @@ class ProductionConfig:
     inversion_inicial: float = INVERSION_INICIAL  # Inversion inicial en equipamiento.
 
     @property
+    def stock_inicial_unidades(self) -> int:
+        return self.stock_inicial_lotes * TARTALETAS_POR_LOTE
+
+    @property
     def tasa_arribo_media(self) -> float:
-        """Media de la EXPONENCIAL de tiempos entre arribos (min)."""
-        return self.ventana_arribos_min / self.n_comensales
+        """Media TEORICA de la Exponencial de arribos (min), para la validacion V&V."""
+        return MEDIA_ARRIBO_MIN
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +133,8 @@ class ProductionConfig:
 @dataclass
 class ProductionReplicaResult:
     """KPIs y serie de stock de UNA corrida de la cadena de produccion."""
-    tartaletas_producidas: int = 0       # Unidades fabricadas (sin contar stock inicial).
-    lotes_producidos: int = 0            # Lotes/bandejas completados.
+    tartaletas_producidas: int = 0       # Unidades horneadas durante la jornada (sin contar stock inicial).
+    lotes_producidos: int = 0            # Bandejas horneadas durante la jornada.
     stock_remanente: int = 0             # Tartaletas sobrantes al cerrar la jornada.
     servidos: int = 0                    # Comensales que retiraron su tartaleta.
     tiempo_total: float = 0.0            # Duracion simulada (min).
@@ -231,8 +225,37 @@ class ProductionAggregated:
 # ---------------------------------------------------------------------------
 # MONITOR DEL STOCK (variable de estado: nivel del mostrador)
 # ---------------------------------------------------------------------------
+class _ContenedorMonitoreado(simpy.Container):
+    """simpy.Container que registra su nivel en CADA cambio REAL (put/get exitoso).
+
+    Interceptar `_do_put` / `_do_get` (los unicos puntos donde el nivel cambia de
+    verdad en SimPy) garantiza capturar cada transicion en el instante exacto en que
+    ocurre: el +8 cuando una bandeja sale del horno y el -1 de cada compra. Asi la
+    serie reconstruye una ESCALERA fiel del stock, sin perder los picos de reposicion.
+    La logica del modelo (esperas, servidos, KPIs) no se altera: solo se agrega el
+    efecto colateral de muestreo.
+    """
+
+    def __init__(self, env: simpy.Environment, registrar: "Callable[[], None]",
+                 *args, **kwargs):
+        super().__init__(env, *args, **kwargs)
+        self._registrar = registrar
+
+    def _do_put(self, event):
+        ok = super()._do_put(event)
+        if ok:
+            self._registrar()
+        return ok
+
+    def _do_get(self, event):
+        ok = super()._do_get(event)
+        if ok:
+            self._registrar()
+        return ok
+
+
 class StockMonitor:
-    """Envuelve el simpy.Container del stock y registra su nivel en cada cambio.
+    """Envuelve el Container del stock y registra su nivel en cada cambio.
 
     Reconstruye la serie temporal (tiempo, nivel) que alimenta el grafico de evolucion
     del stock, pintando en rojo los tramos en que el mostrador queda en cero (faltante).
@@ -241,8 +264,9 @@ class StockMonitor:
     def __init__(self, env: simpy.Environment, resultado: ProductionReplicaResult,
                  stock_inicial: int):
         self.env = env
-        self.container = simpy.Container(env, init=stock_inicial, capacity=float("inf"))
         self.resultado = resultado
+        self.container = _ContenedorMonitoreado(
+            env, self._registrar, init=stock_inicial, capacity=float("inf"))
         self._registrar()  # Nivel inicial en t=0.
 
     def _registrar(self) -> None:
@@ -250,125 +274,123 @@ class StockMonitor:
         self.resultado.serie_stock.append(int(self.container.level))
 
     def reponer(self, cantidad: int):
-        """Incorpora un lote terminado al mostrador."""
+        """Incorpora una bandeja recien horneada al mostrador (el Container registra el nivel)."""
         yield self.container.put(cantidad)
-        self._registrar()
 
     def retirar_una(self):
-        """El comensal toma 1 tartaleta (se bloquea si el stock esta en 0)."""
+        """El comensal compra 1 tartaleta (se bloquea si el stock esta en 0)."""
         yield self.container.get(1)
-        self._registrar()
 
 
 # ---------------------------------------------------------------------------
 # PROCESOS GENERADORES SimPy
 # ---------------------------------------------------------------------------
+def _tiempo_etapa(rng: np.random.Generator, media: float) -> float:
+    """Duracion de una etapa: media de receta con una leve variabilidad operativa."""
+    return max(0.5, float(rng.normal(media, media * SIGMA_ETAPA_PCT)))
+
+
 def proceso_lote(env: simpy.Environment, monitor: StockMonitor,
                  operarios: simpy.Resource, horno: simpy.Resource,
-                 cfg: ProductionConfig, rng: np.random.Generator):
-    """Ciclo de fabricacion de UNA tanda de 8 tartaletas por las tres etapas FIJAS.
+                 cfg: ProductionConfig, rng: np.random.Generator, estado: dict,
+                 reordenar: "Callable[[], None]"):
+    """Ciclo de horneado de UNA bandeja de 8 tartaletas por las tres etapas.
 
-    Los tres tiempos son DETERMINISTAS (tiempos de receta controlados): no se muestrea
-    ninguna distribucion, por eso `rng` no se usa aqui. Lo que introduce dinamica y
-    diferencias entre corridas es la CONTIENDA por los recursos (operarios y horno)
-    entre las 8 tandas que se lanzan en paralelo al inicio de la jornada.
+    La dinamica entre corridas proviene de la contienda por los recursos (operarios y
+    horno) y de la leve variabilidad de los tiempos de receta.
     """
     resultado = monitor.resultado
     t_inicio = env.now
 
-    # Etapa 1 (Coccion del Relleno): requiere un operario -> 30 min FIJOS.
+    # Etapa 1 (Coccion del Relleno): requiere un operario (~30 min).
     with operarios.request() as op:
         yield op
-        yield env.timeout(TIEMPO_RELLENO)
+        yield env.timeout(_tiempo_etapa(rng, TIEMPO_RELLENO))
 
-    # Etapa 2 (Horneado de la Masa): requiere una ranura del horno -> 15 min FIJOS.
+    # Etapa 2 (Horneado de la Masa): requiere una ranura del horno (~15 min).
     with horno.request() as ranura:
         yield ranura
-        yield env.timeout(TIEMPO_HORNEADO_MASA)
+        yield env.timeout(_tiempo_etapa(rng, TIEMPO_HORNEADO_MASA))
 
-    # Etapa 3 (Armado y Gratinado del Queso): requiere el horno/gratinadora -> 10 min
-    # FIJOS. El ARMADO de la tartaleta esta SOLAPADO dentro de estos 10 min de gratinado.
+    # Etapa 3 (Armado y Gratinado del Queso): requiere el horno (~10 min, armado solapado).
     with horno.request() as ranura:
         yield ranura
-        yield env.timeout(TIEMPO_GRATINADO)
+        yield env.timeout(_tiempo_etapa(rng, TIEMPO_GRATINADO))
 
-    # Tanda terminada: se reponen 8 tartaletas ENTERAS al mostrador de despacho.
+    # Bandeja terminada: se reponen 8 tartaletas ENTERAS al mostrador de despacho.
     yield from monitor.reponer(TARTALETAS_POR_LOTE)
     resultado.tartaletas_producidas += TARTALETAS_POR_LOTE
     resultado.lotes_producidos += 1
     resultado.tiempos_fabricacion.append(env.now - t_inicio)
-
-
-def lotes_objetivo(cfg: ProductionConfig, stock_inicial: int) -> int:
-    """Cantidad de TANDAS de horneado de 8 unidades para satisfacer la demanda ENTERA.
-
-    Por la regla de despacho entero, cada uno de los cfg.n_comensales consume 1 tartaleta
-    ENTERA, asi que la demanda total es cfg.n_comensales unidades. Las tandas necesarias
-    son el techo de (demanda - stock pre-cocido) / 8; con 64 comensales y sin pre-coccion
-    da ceil(64 / 8) = 8 tandas exactas. Estas ordenes de trabajo se encolan al inicio de
-    la jornada y los recursos (operarios y horno) las procesan EN PARALELO segun su
-    capacidad, por lo que mas operarios u horno mas grande aceleran la reposicion.
-    """
-    faltante = max(0, cfg.n_comensales - stock_inicial)
-    return math.ceil(faltante / TARTALETAS_POR_LOTE)
-
-
-def lanzar_produccion(env: simpy.Environment, monitor: StockMonitor,
-                      operarios: simpy.Resource, horno: simpy.Resource,
-                      cfg: ProductionConfig, rng: np.random.Generator,
-                      n_lotes: int):
-    """Encola TODAS las ordenes de lote en t=0. Cada lote compite por los recursos; la
-    capacidad de operarios y del horno limita cuantos avanzan en paralelo."""
-    for _ in range(n_lotes):
-        env.process(proceso_lote(env, monitor, operarios, horno, cfg, rng))
+    estado["en_produccion"] -= 1
+    reordenar()  # Al liberar capacidad, evalua si conviene hornear otra bandeja.
 
 
 def proceso_comensal(env: simpy.Environment, monitor: StockMonitor,
-                     resultado: ProductionReplicaResult):
-    """Comensal que arriba e intenta retirar una tartaleta del mostrador.
+                     resultado: ProductionReplicaResult, t_arribo: float,
+                     reordenar: "Callable[[], None]"):
+    """Comensal que arriba en su instante REAL e intenta comprar una tartaleta.
 
-    Si hay stock, lo retira al instante; si no, queda en la Cola de Espera por Alimento
-    (bloqueo del Container.get) hasta que un lote reponga el mostrador.
+    Si hay stock, la retira al instante (espera 0); si no, queda en la fila de espera
+    (bloqueo del Container.get) hasta que una bandeja reponga el mostrador. Tras
+    comprar, dispara la evaluacion de la politica de reorden de la cocina.
     """
-    t_arribo = env.now
+    yield env.timeout(t_arribo)            # Llega en su marca de tiempo real.
+    t0 = env.now
     yield from monitor.retirar_una()
-    resultado.esperas.append(env.now - t_arribo)
+    resultado.esperas.append(env.now - t0)
     resultado.servidos += 1
-    # A partir de aqui el comensal pasaria a responder la encuesta web (Pestania 1).
-
-
-def _generador_arribos(env: simpy.Environment, monitor: StockMonitor,
-                       cfg: ProductionConfig, rng: np.random.Generator):
-    """Arribos de comensales segun una EXPONENCIAL de tiempos entre llegadas (igual que
-    la Pestania 1, garantizando el acoplamiento intercatedra)."""
-    resultado = monitor.resultado
-    for _ in range(cfg.n_comensales):
-        env.process(proceso_comensal(env, monitor, resultado))
-        dt = rng.exponential(cfg.tasa_arribo_media)
-        resultado.interarribos.append(dt)   # Muestra para la validacion V&V.
-        yield env.timeout(dt)
+    reordenar()                            # Revisa si hay que hornear otra bandeja.
 
 
 # ---------------------------------------------------------------------------
 # CORRIDA DE UNA REPLICA Y AGREGACION DE EXPERIMENTOS
 # ---------------------------------------------------------------------------
 def correr_replica(cfg: ProductionConfig, semilla: int) -> ProductionReplicaResult:
-    """Ejecuta UNA corrida completa de la cadena de produccion y devuelve sus KPIs."""
+    """Ejecuta UNA jornada completa del stand (politica de reorden) y devuelve sus KPIs."""
     rng = np.random.default_rng(semilla)
     env = simpy.Environment()
     resultado = ProductionReplicaResult()
-    stock_inicial = STOCK_INICIAL_LOTES * TARTALETAS_POR_LOTE
+    stock_inicial = cfg.stock_inicial_unidades
     monitor = StockMonitor(env, resultado, stock_inicial)
     operarios = simpy.Resource(env, capacity=cfg.operarios)
     horno = simpy.Resource(env, capacity=cfg.horno_slots)
+    demanda = cfg.n_comensales
 
-    n_lotes = lotes_objetivo(cfg, stock_inicial)
-    env.process(_generador_arribos(env, monitor, cfg, rng))
-    lanzar_produccion(env, monitor, operarios, horno, cfg, rng, n_lotes)
-    env.run()  # Corre hasta servir a todos y terminar todos los lotes encolados.
+    # Estado de la politica de reorden: unidades comprometidas (stock inicial + lo que
+    # ya se mando a hornear) y bandejas actualmente en el horno.
+    estado = {"committed": stock_inicial, "en_produccion": 0}
+
+    def _lanzar_lote() -> None:
+        estado["committed"] += TARTALETAS_POR_LOTE
+        estado["en_produccion"] += 1
+        env.process(proceso_lote(env, monitor, operarios, horno, cfg, rng, estado,
+                                 _quizas_reordenar))
+
+    def _quizas_reordenar() -> None:
+        # Politica de reorden (s, S) por demanda: cuando el stock disponible cae al
+        # punto critico (<= UMBRAL_REORDEN), la cocina manda a hornear las bandejas que
+        # falten para cubrir la demanda total -sin sobreproducir-, manteniendo a la vez
+        # el pipeline lleno hasta la capacidad de los recursos (operarios + horno). Los
+        # propios recursos limitan cuantas bandejas avanzan en paralelo, asi que mas
+        # operarios u horno mas grande aceleran la reposicion (y bajan las esperas).
+        cap_pipeline = cfg.operarios + cfg.horno_slots
+        while (estado["committed"] < demanda
+               and monitor.container.level <= UMBRAL_REORDEN
+               and estado["en_produccion"] < cap_pipeline):
+            _lanzar_lote()
+
+    # Arranque: si abrimos con poco stock, ya disparamos las primeras bandejas.
+    _quizas_reordenar()
+    # Comensales con sus marcas de tiempo REALES (primeros `demanda` arribos).
+    for t_arribo in ARRIBOS_MIN[:demanda]:
+        env.process(proceso_comensal(env, monitor, resultado, t_arribo, _quizas_reordenar))
+
+    env.run()  # Corre hasta servir a todos y terminar todas las bandejas en curso.
 
     resultado.tiempo_total = env.now
     resultado.stock_remanente = int(monitor.container.level)
+    resultado.interarribos = interarribos_min()  # Gaps reales para la V&V del modelo.
     # Punto final para cerrar la curva escalonada del stock.
     resultado.serie_t.append(env.now)
     resultado.serie_stock.append(int(monitor.container.level))
@@ -378,13 +400,14 @@ def correr_replica(cfg: ProductionConfig, semilla: int) -> ProductionReplicaResu
 def _finanzas_replica(r: ProductionReplicaResult, cfg: ProductionConfig) -> Dict[str, float]:
     """Indicadores economicos (ARS) de UNA jornada simulada (escenario de venta).
 
-    Las tartaletas vendidas son las efectivamente retiradas por los comensales. El costo
-    variable se calcula sobre las tandas realmente horneadas (mas el stock pre-cocido si
-    lo hubiera), ya que cada tanda de 8 unidades consume una porcion de materia prima.
+    Se venden las tartaletas efectivamente retiradas por los comensales. El costo de
+    materia prima se imputa sobre TODAS las bandejas que existieron en la jornada: las
+    horneadas en vivo MAS las de pre-produccion (stock inicial), porque ambas
+    consumieron insumos.
     """
     unidades_vendidas = float(r.servidos)
     ingresos = unidades_vendidas * cfg.precio_venta_unidad
-    lotes_totales = r.lotes_producidos + STOCK_INICIAL_LOTES
+    lotes_totales = r.lotes_producidos + cfg.stock_inicial_lotes
     costo_variable = lotes_totales * cfg.costo_mp_lote
     costo_fijo = cfg.operarios * cfg.costo_operario_jornada
     rentabilidad = ingresos - costo_variable - costo_fijo
@@ -402,7 +425,7 @@ def correr_experimento(cfg: ProductionConfig, n_replicas: int = N_REPLICAS_DEFAU
                        semilla_base: int = SEED_BASE,
                        progreso: Callable[[int, int], None] | None = None
                        ) -> ProductionAggregated:
-    """Ejecuta N replicas de la cadena de produccion, agrega los KPIs (media + IC 95%)
+    """Ejecuta N replicas de la jornada del stand, agrega los KPIs (media + IC 95%)
     y conserva la serie de stock de la primera corrida como corrida representativa."""
     replicas: List[ProductionReplicaResult] = []
     for rep in range(n_replicas):
@@ -442,7 +465,7 @@ def correr_experimento(cfg: ProductionConfig, n_replicas: int = N_REPLICAS_DEFAU
     # Trazabilidad del metodo de IC e interarribos para la validacion del generador.
     agg.cuantil_ic, agg.metodo_ic, agg.gl_ic = cuantil_ic95(n_replicas)
     agg.n_muestral = n_replicas
-    agg.interarribos = [dt for r in replicas for dt in r.interarribos]
+    agg.interarribos = list(replicas[0].interarribos)
 
     rep0 = replicas[0]
     agg.serie_t = rep0.serie_t
@@ -454,10 +477,11 @@ def correr_experimento(cfg: ProductionConfig, n_replicas: int = N_REPLICAS_DEFAU
 # DIAGNOSTICO DE VIABILIDAD ORGANIZACIONAL
 # ---------------------------------------------------------------------------
 def generar_diagnostico(agg: ProductionAggregated) -> str:
-    """Texto interpretativo sobre la viabilidad de la cadena de produccion."""
+    """Texto interpretativo sobre la viabilidad de la cadena de produccion del stand."""
     cfg = agg.config
     producidas = agg.media("tartaletas_producidas")
     espera_max = agg.media("espera_maxima")
+    espera_prom = agg.media("espera_promedio")
     en_espera = agg.media("comensales_en_espera")
     remanente = agg.media("stock_remanente")
     fab = agg.media("tiempo_fab_promedio")
@@ -468,28 +492,35 @@ def generar_diagnostico(agg: ProductionAggregated) -> str:
     payback = agg.payback_jornadas
 
     lineas: List[str] = []
-    lineas.append(f"DIAGNOSTICO DE PRODUCCION (promedio de {agg.n_replicas} corrida/s)")
+    lineas.append(f"DIAGNOSTICO DE PRODUCCION DEL STAND (promedio de {agg.n_replicas} corrida/s)")
     lineas.append("-" * 64)
     lineas.append(
-        f"Configuracion: {cfg.operarios} operario/s y horno de {cfg.horno_slots} "
-        f"lote/s simultaneo/s. Cada lote rinde {TARTALETAS_POR_LOTE} tartaletas.")
+        f"Configuracion: {cfg.operarios} operario/s, horno de {cfg.horno_slots} "
+        f"bandeja/s en paralelo y apertura con {cfg.stock_inicial_lotes} lote/s de "
+        f"pre-produccion ({cfg.stock_inicial_unidades} tartaletas calientes).")
     lineas.append(
-        f"Se fabricaron {producidas:.0f} tartaletas para {cfg.n_comensales} comensales; "
-        f"tiempo medio de fabricacion de un lote: {fab:.1f} min.")
+        f"Politica de reorden: se hornea una bandeja nueva de {TARTALETAS_POR_LOTE} "
+        f"unidades cuando el stock disponible cae a {UMBRAL_REORDEN} o menos. Se "
+        f"hornearon {producidas:.0f} tartaletas en vivo durante la jornada; tiempo "
+        f"medio de ciclo de una bandeja: {fab:.1f} min.")
+    lineas.append(
+        f"Los {cfg.n_comensales} comensales arribaron segun los horarios reales del "
+        f"stand (jornada de {DURACION_JORNADA_MIN:.0f} min).")
 
     if en_espera < 1 and espera_max < 1:
         lineas.append(
-            "La cadena ABASTECE con holgura: practicamente ningun comensal espera por "
-            "alimento y siempre hay stock en el mostrador.")
+            "El stand ABASTECE con holgura: practicamente ningun comensal espera; el "
+            "stock inicial y la reposicion alcanzan el ritmo de compra.")
     elif espera_max <= 5:
         lineas.append(
-            f"La cadena es VIABLE con tension leve: hasta {en_espera:.0f} comensales "
-            f"esperan, con una espera maxima de {espera_max:.1f} min (tolerable).")
+            f"El stand es VIABLE con tension leve: hasta {en_espera:.0f} comensales "
+            f"esperan, con una espera maxima de {espera_max:.1f} min (tolerable) y una "
+            f"espera promedio de {espera_prom:.1f} min.")
     else:
         lineas.append(
-            f"CUELLO DE BOTELLA DE PRODUCCION: {en_espera:.0f} comensales quedan en la "
-            f"cola de espera por alimento y la espera maxima trepa a {espera_max:.1f} min. "
-            "La cocina no acompania el ritmo de consumo.")
+            f"CUELLO DE BOTELLA DE PRODUCCION: {en_espera:.0f} comensales hacen fila, "
+            f"con una espera maxima de {espera_max:.1f} min (promedio {espera_prom:.1f} "
+            "min). La cocina no acompania el ritmo de compra del pico.")
 
     lineas.append(f"Stock remanente al cierre: {remanente:.0f} tartaletas.")
 
@@ -499,7 +530,7 @@ def generar_diagnostico(agg: ProductionAggregated) -> str:
     lineas.append(
         f"Con {vendidas:.0f} tartaletas vendidas a ${cfg.precio_venta_unidad:,.0f} c/u, "
         f"los ingresos de la jornada son ${ingresos:,.0f} y los costos totales "
-        f"${costo_total:,.0f} (materia prima + operarios).")
+        f"${costo_total:,.0f} (materia prima de las bandejas + operarios).")
     if rentabilidad > 0:
         lineas.append(
             f"Rentabilidad proyectada por jornada: ${rentabilidad:,.0f} (POSITIVA). "
@@ -514,19 +545,18 @@ def generar_diagnostico(agg: ProductionAggregated) -> str:
     lineas.append("")
     lineas.append("RECOMENDACIONES:")
     if espera_max > 5:
-        lineas.append("  - Sumar operarios o ampliar la capacidad del horno para subir "
-                      "la tasa de produccion por hora.")
-        lineas.append("  - Pre-cocinar lotes antes de abrir el evento (stock inicial "
-                      "mayor) para absorber el pico inicial de arribos.")
+        lineas.append("  - Abrir con mas stock de pre-produccion para absorber el pico "
+                      "inicial de compras de la feria.")
+        lineas.append("  - Sumar operarios o ampliar la capacidad del horno para acelerar "
+                      "la reposicion de bandejas.")
     if remanente > 2 * TARTALETAS_POR_LOTE:
-        lineas.append("  - Hay sobreproduccion: se puede reducir un recurso o ajustar el "
-                      "tamanio de lote para evitar desperdicio de alimento.")
+        lineas.append("  - Hay sobreproduccion: reducir el stock inicial o algun recurso "
+                      "para evitar desperdicio de alimento.")
     if en_espera < 1 and remanente <= 2 * TARTALETAS_POR_LOTE:
         lineas.append("  - Configuracion equilibrada: mantenerla para el evento real.")
     if rentabilidad <= 0:
         lineas.append("  - Revisar el modelo de negocio: subir el precio de venta sugerido, "
-                      "comprar materia prima a escala o reducir el costo fijo de operarios "
-                      "para volver rentable la jornada.")
+                      "comprar materia prima a escala o reducir el costo fijo de operarios.")
     elif payback > 0 and payback != float("inf"):
         lineas.append(f"  - Modelo de venta viable: con la demanda simulada, el "
                       f"emprendimiento recupera la inversion en ~{payback:.0f} jornadas.")

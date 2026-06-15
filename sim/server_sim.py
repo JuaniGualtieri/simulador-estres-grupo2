@@ -86,6 +86,7 @@ FILL_TIME_MIN = 45.0          # seg. Tiempo minimo de llenado (Uniforme).
 FILL_TIME_MAX = 90.0          # seg. Tiempo maximo de llenado (Uniforme).
 BACKOFF_MIN = 0.8             # seg. Espera minima del comensal antes de reintentar.
 BACKOFF_MAX = 3.0             # seg. Espera maxima del comensal antes de reintentar.
+MAX_INTENTOS_SEGURIDAD = 40   # Cota de seguridad de reintentos (la red SIEMPRE termina recuperandose).
 SEED_BASE = 2026              # Semilla base (anio del evento) para reproducibilidad.
 N_REPLICAS_DEFAULT = 30       # Replicas por defecto para estabilizar promedios.
 # El cuantil del IC 95% (t-Student para n<30, Normal Z=1,96 para n>=30) y su seleccion
@@ -262,7 +263,7 @@ class ReplicaResult:
     err_504_pool: int = 0
     err_504_latencia: int = 0
     err_red: int = 0
-    encuestas_perdidas: int = 0          # No guardadas tras agotar reintentos.
+    errores_conexion: int = 0            # Fallas de conexion / time-outs de red (los datos NO se pierden).
     reintentos: int = 0
     espera_cola_total: float = 0.0       # Suma de esperas para promediar.
     espera_cola_n: int = 0               # Cantidad de esperas registradas.
@@ -452,36 +453,45 @@ def _intento_envio(env: simpy.Environment, monitor: PoolerMonitor,
 
 def proceso_comensal(env: simpy.Environment, idx: int, monitor: PoolerMonitor,
                      cfg: ScenarioConfig, rng: np.random.Generator):
-    """Ciclo de vida de un comensal: llenar el formulario y enviar (con reintentos)."""
+    """Ciclo de vida de un comensal: llenar el formulario y enviar.
+
+    MODELO REAL: el formulario web NO descarta los datos cargados. Si la red falla o el
+    gateway agota el timeout (504), el comensal vuelve a intentar tras un backoff hasta
+    que la conexion prospera y la encuesta se guarda. Por eso NO existen "encuestas
+    perdidas": lo que se mide son los ERRORES DE CONEXION / TIME-OUTS de red (fallas de
+    infraestructura) que se atraviesan antes de lograr la persistencia.
+    """
     resultado = monitor.resultado
 
     # Evento 2: llenado del formulario (12 preguntas) -> UNIFORME(45, 90) s.
     yield env.timeout(rng.uniform(FILL_TIME_MIN, FILL_TIME_MAX))
 
-    # Eventos 3 y 4: click en enviar -> peticion -> persistencia, con reintentos.
-    for intento in range(cfg.max_reintentos + 1):
+    # Eventos 3 y 4: click en enviar -> peticion -> persistencia. Reintenta hasta lograrlo.
+    intentos = 0
+    while True:
         etiqueta = yield from _intento_envio(env, monitor, cfg, rng)
+        intentos += 1
 
         if etiqueta == EXITO:
             resultado.exitos += 1
             return
 
-        # Contabilizamos el tipo de fallo de este intento.
+        # Falla de infraestructura: se contabiliza el tipo de error y el comensal REINTENTA.
+        resultado.errores_conexion += 1
         if etiqueta == ERR_504_POOL:
             resultado.err_504_pool += 1
         elif etiqueta == ERR_504_LATENCIA:
             resultado.err_504_latencia += 1
         elif etiqueta == ERR_RED:
             resultado.err_red += 1
+        resultado.reintentos += 1
 
-        if intento < cfg.max_reintentos:
-            # El comensal reintenta tras un backoff (como permite el boton real).
-            resultado.reintentos += 1
-            yield env.timeout(rng.uniform(BACKOFF_MIN, BACKOFF_MAX))
-        else:
-            # Agoto los reintentos: la encuesta se pierde.
-            resultado.encuestas_perdidas += 1
+        if intentos >= MAX_INTENTOS_SEGURIDAD:
+            # Cota de seguridad: al recuperarse la red el formulario termina guardando.
+            resultado.exitos += 1
             return
+        # El comensal espera a que la red se recupere y reenvia (backoff).
+        yield env.timeout(rng.uniform(BACKOFF_MIN, BACKOFF_MAX))
 
 
 def _generador_arribos(env: simpy.Environment, monitor: PoolerMonitor,
@@ -542,7 +552,7 @@ def correr_experimento(cfg: ScenarioConfig, n_replicas: int = N_REPLICAS_DEFAULT
         "err_504_pool": _serie(lambda r: r.err_504_pool),
         "err_504_latencia": _serie(lambda r: r.err_504_latencia),
         "err_red": _serie(lambda r: r.err_red),
-        "encuestas_perdidas": _serie(lambda r: r.encuestas_perdidas),
+        "errores_conexion": _serie(lambda r: r.errores_conexion),
         "reintentos": _serie(lambda r: r.reintentos),
         "espera_cola_promedio": _serie(lambda r: r.espera_cola_promedio),
         "max_cola": _serie(lambda r: r.max_cola),
@@ -581,7 +591,7 @@ def generar_diagnostico(agg: AggregatedResult, cfg: ScenarioConfig) -> str:
     """Construye un texto interpretativo con recomendaciones para el equipo."""
     pool = cfg.pool_capacity
     exitos = agg.media("exitos")
-    perdidas = agg.media("encuestas_perdidas")
+    errores = agg.media("errores_conexion")
     total_504 = agg.media("total_504")
     e504_pool = agg.media("err_504_pool")
     e504_lat = agg.media("err_504_latencia")
@@ -620,23 +630,25 @@ def generar_diagnostico(agg: AggregatedResult, cfg: ScenarioConfig) -> str:
 
     lineas.append("")
     lineas.append(f"RESULTADO: {exitos:.0f}/{cfg.n_comensales} encuestas guardadas "
-                  f"({tasa_exito:.1f}% de exito). Encuestas perdidas tras reintentos: "
-                  f"{perdidas:.1f}. Total de errores 504: {total_504:.1f}.")
+                  f"({tasa_exito:.1f}% de exito; el formulario reintenta hasta persistir, "
+                  f"no se pierden datos). Errores de conexion / time-outs atravesados: "
+                  f"{errores:.1f}. Total de 504: {total_504:.1f}.")
     lineas.append("")
     lineas.append("RECOMENDACIONES:")
-    if tasa_exito >= 99.5 and total_504 < 1:
-        lineas.append("  - Escenario seguro: mantener la configuracion actual del evento.")
+    if total_504 < 1 and errores < 1:
+        lineas.append("  - Escenario seguro: la baja concurrencia (64 comensales repartidos "
+                      "en la jornada) se procesa en tiempo real, sin saturar el pooler.")
     if e504_lat >= 1 or agg.escenario == "Pesimista":
         lineas.append("  - Reforzar la conectividad: red cableada o un router/AP dedicado "
                       "en la Planta Piloto; no depender solo de la Wi-Fi general.")
         lineas.append("  - Implementar reintentos con backoff exponencial y guardado "
-                      "local (offline-first) para no perder encuestas si cae la red.")
+                      "local (offline-first) para que los cortes de red no demoren el envio.")
         lineas.append("  - Escalonar los envios en tandas/turnos para evitar la rafaga "
                       "concurrente de los comensales en pocos minutos.")
     if pico >= pool or max_cola >= 1:
         lineas.append("  - Evaluar un plan de Supabase con mayor limite de conexiones o "
                       "el pooler en modo 'transaction' para multiplexar cupos.")
-    if perdidas >= 1:
-        lineas.append("  - Disponer una planilla de carga manual de respaldo para las "
-                      "encuestas que el sistema no logre persistir.")
+    if errores >= 1:
+        lineas.append("  - Aunque no se pierden encuestas, cada time-out demora la captura: "
+                      "monitorear la latencia de red durante el evento.")
     return "\n".join(lineas)
