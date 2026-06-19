@@ -1,5 +1,5 @@
 # Simulación de Eventos Discretos — Grupo 2 (v7.0)
-
+LINK AL SIMULADOR: https://simuladormisstartaletas.streamlit.app/
 Aplicación **web** (Streamlit) que unifica **dos modelos de simulación de eventos
 discretos** (SimPy) en una interfaz multipestaña, bajo una arquitectura **modular**
 (principios SOLID / Clean Code).
